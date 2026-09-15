@@ -1,0 +1,11 @@
+numpy==2.2.6
+pandas==2.3.3
+PyYAML==6.0.3
+rdkit==2026.3.6
+scikit-learn==1.7.2
+ipykernel==7.3.0
+nbconvert==7.17.1
+nbformat==5.11.1
+
+# Test-only
+pytest==9.1.1

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mostgen"
+version = "0.1.0"
+description = "Reproducible reaction-constrained screening prototype for UV-absorbing MOST photoswitches"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "MOST screening prototype contributors"}]
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.0",
+  "PyYAML>=6.0",
+  "rdkit>=2024.3",
+  "scikit-learn>=1.4"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+mostgen = "mostgen.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mostgen*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

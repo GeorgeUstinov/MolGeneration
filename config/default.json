@@ -1,0 +1,158 @@
+{
+  "schema_version": "1.0",
+  "project": {
+    "name": "mostgen_uv_most",
+    "version": "0.1.0",
+    "default_seed": 1701,
+    "max_training_structures": 30000,
+    "max_gpu_hours": 8.0,
+    "disclaimer": "Research screening proxy; not ISO-certified and not a cosmetic safety determination."
+  },
+  "execution": {
+    "backend": "surrogate_smoke",
+    "methods": ["prior_random", "weighted_retraining", "libinvent_rl"],
+    "seeds": [1701, 2903, 4211],
+    "n_per_run": 1000,
+    "reviewer_budget_per_run": 1000,
+    "shortlist_size": 75,
+    "bootstrap_samples": 300,
+    "gpu_hours": 0.0
+  },
+  "smoke": {
+    "seeds": [17],
+    "n_per_run": 40,
+    "reviewer_budget_per_run": 40,
+    "shortlist_size": 12,
+    "bootstrap_samples": 40,
+    "training_rows_per_family": 72
+  },
+  "production": {
+    "reinvent4_repository": "https://github.com/MolecularAI/REINVENT4",
+    "reinvent4_version": "4.8",
+    "reinvent4_revision": "80a8d21",
+    "reaction_prior_path": "",
+    "reaction_prior_sha256": "",
+    "xtb_executable": "xtb",
+    "stda_executable": "stda",
+    "xtb4stda_executable": "xtb4stda",
+    "require_rdkit": true,
+    "require_physical_oracle": true
+  },
+  "elements": ["B", "C", "N", "O", "F", "Si", "P", "S", "Cl", "Br"],
+  "validation_only_families": ["iti"],
+  "families": {
+    "nbd_qc": {
+      "role": "primary",
+      "scaffold_id": "NBD-1,4-disubstituted",
+      "ground_template": "C1({r1})=CC2C=CC1({r2})C2",
+      "charged_template": "C1({r1})C2C3C4C1({r2})C3C24",
+      "reaction_smarts": "[*:1].[C:2]1=[C:3][C:4]2[C:5]=[C:6][C:7]1[C:8]2>>[*:1]-[C:2]1=[C:3][C:4]2[C:5]=[C:6][C:7]1[C:8]2",
+      "allowed_positions": ["C1", "C4"]
+    },
+    "dewar_pyrimidinone": {
+      "role": "low_data_experimental",
+      "scaffold_id": "pyrimidin-4-one-2,6-disubstituted",
+      "ground_template": "O=c1[nH]c({r1})nc({r2})c1",
+      "charged_template": "O=C1N2C({r1})=NC({r2})C12",
+      "reaction_smarts": "[*:1].[O:2]=[c:3]1[nH:4][c:5][n:6][c:7][c:8]1>>[O:2]=[c:3]1[nH:4][c:5]([*:1])[n:6][c:7][c:8]1",
+      "allowed_positions": ["C2", "C6"]
+    },
+    "spiropyran": {
+      "role": "transferability_check",
+      "scaffold_id": "indolino-benzopyran-6,8-disubstituted",
+      "ground_template": "c1c({r1})cc2c(c1{r2})OC1(CCN(C)C1)C2",
+      "charged_template": "C[NH+]1CCC(C1)=Cc1c([O-])cc({r1})cc1{r2}",
+      "reaction_smarts": "[*:1].[c:2]1[c:3][c:4][c:5]2[c:6]([c:7]1)[O:8][C:9]1(CC[N:10](C)C1)[C:11]2>>[*:1]-[c:2]1[c:3][c:4][c:5]2[c:6]([c:7]1)[O:8][C:9]1(CC[N:10](C)C1)[C:11]2",
+      "allowed_positions": ["C6", "C8"]
+    }
+  },
+  "synthons": [
+    {"id": "S01", "smiles": "F", "commercial": true},
+    {"id": "S02", "smiles": "Cl", "commercial": true},
+    {"id": "S03", "smiles": "Br", "commercial": true},
+    {"id": "S04", "smiles": "C", "commercial": true},
+    {"id": "S05", "smiles": "CC", "commercial": true},
+    {"id": "S06", "smiles": "CCC", "commercial": true},
+    {"id": "S07", "smiles": "C(F)(F)F", "commercial": true},
+    {"id": "S08", "smiles": "C#N", "commercial": true},
+    {"id": "S09", "smiles": "N", "commercial": true},
+    {"id": "S10", "smiles": "NC", "commercial": true},
+    {"id": "S11", "smiles": "N(C)C", "commercial": true},
+    {"id": "S12", "smiles": "O", "commercial": true},
+    {"id": "S13", "smiles": "OC", "commercial": true},
+    {"id": "S14", "smiles": "OCC", "commercial": true},
+    {"id": "S15", "smiles": "C(=O)O", "commercial": true},
+    {"id": "S16", "smiles": "C(=O)OC", "commercial": true},
+    {"id": "S17", "smiles": "C(=O)N", "commercial": true},
+    {"id": "S18", "smiles": "S(=O)(=O)C", "commercial": true},
+    {"id": "S19", "smiles": "c5ccccc5", "commercial": true},
+    {"id": "S20", "smiles": "c5ccc(F)cc5", "commercial": true},
+    {"id": "S21", "smiles": "c5ccc(Cl)cc5", "commercial": true},
+    {"id": "S22", "smiles": "c5ccc(C#N)cc5", "commercial": true},
+    {"id": "S23", "smiles": "c5ccc(OC)cc5", "commercial": true},
+    {"id": "S24", "smiles": "c5ccc(N(C)C)cc5", "commercial": true},
+    {"id": "S25", "smiles": "c5ccncc5", "commercial": true},
+    {"id": "S26", "smiles": "c5ncccc5", "commercial": true},
+    {"id": "S27", "smiles": "c5ccsc5", "commercial": true},
+    {"id": "S28", "smiles": "C=C", "commercial": true},
+    {"id": "S29", "smiles": "C=C(C)C", "commercial": true},
+    {"id": "S30", "smiles": "C5CC5", "commercial": true},
+    {"id": "S31", "smiles": "C5CCC5", "commercial": true},
+    {"id": "S32", "smiles": "C5CCOC5", "commercial": true},
+    {"id": "S33", "smiles": "C(F)F", "commercial": true},
+    {"id": "S34", "smiles": "P(=O)(O)O", "commercial": true}
+  ],
+  "reviewers": {
+    "ensemble_size": 5,
+    "fingerprint_bits": 256,
+    "ad_similarity_threshold": 0.18,
+    "confidence_z": 1.645,
+    "half_life_window_hours": [4.0, 24.0],
+    "lambda_c_min_nm": 370.0,
+    "phototoxicity_max_probability": 0.35,
+    "kp_max_log_cm_s": -4.0,
+    "uncertain_probability_band": [0.25, 0.45]
+  },
+  "reward": {
+    "floor": 0.001,
+    "stages": [
+      {"name": "chemistry", "components": ["validity", "family", "pair"]},
+      {"name": "spectrum", "components": ["uvb", "uva", "lambda_c"]},
+      {"name": "most", "components": ["energy", "half_life"]},
+      {"name": "safety", "components": ["phototoxicity", "permeation", "sa", "ad"]}
+    ],
+    "weights": {"uvb": 1.2, "uva": 1.5, "lambda_c": 1.0, "energy": 1.2, "half_life": 1.0, "phototoxicity": 1.5, "permeation": 0.8, "sa": 0.6, "ad": 1.0},
+    "diversity_penalty": 0.12
+  },
+  "safety": {
+    "psoralen_similarity_warning_threshold": 0.45,
+    "psoralen_core_smarts": [
+      "C1=CC(=O)OC2=CC3=C(C=CO3)C=C21",
+      "C1=CC2=C(C=CO2)C3=C1C=CC(=O)O3"
+    ],
+    "known_phototoxic_smiles": [
+      "C1=CC(=O)OC2=CC3=C(C=CO3)C=C21",
+      "C1=CC2=C(C=CO2)C3=C1C=CC(=O)O3",
+      "COC1=C2C=CC(=O)OC2=CC3=C1C=CO3"
+    ],
+    "reactive_fragments": ["N=N=N", "OO", "C(Cl)(Cl)Cl", "[N-]=[N+]=N", "P(Cl)Cl", "S(Cl)(=O)=O"]
+  },
+  "sources": [
+    {"id": "M01", "role": "photoswitch calibration", "url": "LOCAL_OR_LICENSED_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "M03", "role": "MOST energy and spectrum validation", "url": "LOCAL_OR_LICENSED_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "M04", "role": "MOST state validation", "url": "LOCAL_OR_LICENSED_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "M08-M10", "role": "literature orientation only; no bulk training data claimed", "url": "BIBLIOGRAPHY_RESOLUTION_REQUIRED", "license": "metadata_only"},
+    {"id": "M11", "role": "spectral pretraining", "url": "LOCAL_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "M12", "role": "spectral pretraining", "url": "LOCAL_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "M13", "role": "unified spectral transfer", "url": "LOCAL_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "U07-U10", "role": "irritation and sensitisation", "url": "LOCAL_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "U11-U14", "role": "skin permeation Kp/Jmax", "url": "LOCAL_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "U16-U17", "role": "phototoxicity", "url": "LOCAL_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "U01/U03/U06", "role": "versioned regulatory and expert references only", "url": "REGISTRY_RESOLUTION_REQUIRED", "license": "metadata_only"},
+    {"id": "REINVENT4", "role": "LibInvent generator", "url": "https://github.com/MolecularAI/REINVENT4", "version": "4.8@80a8d21", "license": "Apache-2.0"},
+    {"id": "SCCP", "role": "furocoumarin safety opinion", "url": "https://ec.europa.eu/health/ph_risk/committees/04_sccp/docs/sccp_o_036.pdf", "license": "public_document"},
+    {"id": "ISO24444", "role": "finished-product in vivo SPF method", "url": "https://www.iso.org/standard/72250.html", "license": "metadata_only"},
+    {"id": "ISO24443", "role": "finished-product in vitro UVA method", "url": "https://www.iso.org/standard/75059.html", "license": "metadata_only"},
+    {"id": "OECD432", "role": "experimental phototoxicity", "url": "https://www.oecd.org/en/publications/2019/06/test-no-432-in-vitro-3t3-nru-phototoxicity-test_g1gh4b69.html", "license": "public_metadata"}
+  ]
+}
