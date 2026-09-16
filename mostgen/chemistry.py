@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Iterable
+import xml.etree.ElementTree as ET
 
 from rdkit import Chem, DataStructs
 from rdkit.Chem import Descriptors, Lipinski, rdMolDescriptors
@@ -189,6 +191,37 @@ def _core_query(pattern: str) -> Chem.Mol | None:
     return Chem.MolFromSmiles(pattern)
 
 
+@lru_cache(maxsize=4)
+def _u16_positive_registry(directory_name: str) -> tuple[str, ...]:
+    """Read exact experimental positives from the pinned U16 QsarDB archive."""
+    directory = Path(directory_name)
+    if not directory.is_absolute():
+        directory = Path(__file__).resolve().parents[1] / directory
+    compounds_xml = directory / "compounds" / "compounds.xml"
+    values_path = directory / "properties" / "3T3_NRU_Phototoxicity" / "values"
+    if not compounds_xml.exists() or not values_path.exists():
+        return ()
+    namespace = {"q": "http://www.qsardb.org/QDB"}
+    compounds: dict[int, str] = {}
+    for node in ET.parse(compounds_xml).getroot().findall("q:Compound", namespace):
+        cid = int(node.findtext("q:Id", namespaces=namespace))
+        inchi = node.findtext("q:InChI", default="", namespaces=namespace)
+        mol = Chem.MolFromInchi(inchi) if inchi else None
+        if mol is not None:
+            compounds[cid] = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=True)
+    positives = []
+    with values_path.open(encoding="utf-8") as handle:
+        next(handle, None)
+        for line in handle:
+            fields = line.rstrip().split("\t")
+            if len(fields) == 2 and fields[1] == "P" and int(fields[0]) in compounds:
+                try:
+                    positives.append(standardize_smiles(compounds[int(fields[0])]))
+                except ChemistryError:
+                    pass
+    return tuple(sorted(set(positives)))
+
+
 def safety_veto(smiles: str, config: dict[str, Any]) -> SafetyVeto:
     reasons: list[str] = []
     try:
@@ -213,7 +246,8 @@ def safety_veto(smiles: str, config: dict[str, Any]) -> SafetyVeto:
     canonical = Chem.MolToSmiles(mol, canonical=True, isomericSmiles=True)
     known = False
     known_canonical: list[str] = []
-    for known_smiles in safety["known_phototoxic_smiles"]:
+    registry = _u16_positive_registry(str(safety.get("u16_qsardb_directory", ""))) if safety.get("u16_qsardb_directory") else ()
+    for known_smiles in [*safety["known_phototoxic_smiles"], *registry]:
         try:
             normalized_known = standardize_smiles(known_smiles)
             known_canonical.append(normalized_known)

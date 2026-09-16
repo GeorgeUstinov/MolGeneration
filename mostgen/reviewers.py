@@ -144,7 +144,9 @@ class ReviewerBundle:
     def load(cls, path: str | Path) -> "ReviewerBundle":
         with Path(path).open("rb") as handle:
             bundle = pickle.load(handle)
-        if not isinstance(bundle, cls):
+        if not isinstance(bundle, cls) and not (
+            hasattr(bundle, "predict_many") and hasattr(bundle, "purpose")
+        ):
             raise TypeError("Reviewer artifact has an unexpected type")
         return bundle
 
@@ -278,6 +280,10 @@ def _train_bundle(rows: list[dict[str, str]], config: dict[str, Any], purpose: s
 
 def train_reviewers(config: dict[str, Any], data_path: str | Path, output_dir: str | Path) -> dict[str, Any]:
     rows = read_csv(data_path)
+    if rows and "endpoint" in rows[0]:
+        from .real_reviewers import train_real_reviewers
+
+        return train_real_reviewers(config, data_path, output_dir)
     if len(rows) > int(config["project"]["max_training_structures"]):
         raise ValueError("Reviewer training rows exceed configured cap")
     tiers = {row.get("evidence_tier") for row in rows}

@@ -17,7 +17,11 @@ def test_three_methods_use_exact_matched_budget(smoke_experiment):
     rows = read_csv(smoke_experiment["root"] / "generated.csv")
     counts = Counter((row["method_id"], row["seed"]) for row in rows)
     assert set(method for method, _ in counts) == {"prior_random", "weighted_retraining", "libinvent_rl"}
-    assert set(counts.values()) == {smoke_experiment["config"]["execution"]["reviewer_budget_per_run"]}
+    assert set(counts.values()) == {smoke_experiment["config"]["execution"]["n_per_run"]}
+    ledger = json.loads((smoke_experiment["root"] / "search_budget_ledger.json").read_text())
+    assert {item["candidate_reward_evaluations"] for item in ledger["runs"].values()} == {
+        smoke_experiment["config"]["execution"]["reviewer_budget_per_run"]
+    }
     assert smoke_experiment["metrics"]["matched_reviewer_budget"]
 
 
@@ -27,6 +31,8 @@ def test_generated_schema_and_uniqueness(smoke_experiment):
         "smiles", "charged_smiles", "family", "method_id", "seed", "uvb_auc",
         "uva_auc", "lambda_c_nm", "energy_kj_mol", "specific_energy_wh_kg",
         "half_life_h", "kp_log_cm_s", "phototoxicity_probability",
+        "specific_energy_lcb", "uvb_transmittance_ucb", "uva_transmittance_ucb",
+        "film_proxy_pass", "beer_lambert_loading_scale",
         "uvb_auc_uncertainty", "energy_uncertainty", "similarity_D_A",
         "similarity_D_B", "ad_spectral", "ad_most", "sa_score",
         "psoralen_alert", "joint_pass", "selected", "not_iso_certified",
@@ -60,6 +66,18 @@ def test_family_coverage(smoke_experiment):
         }
 
 
+def test_specific_energy_and_conditional_film_proxy_are_hard_gates(smoke_experiment):
+    rows = read_csv(smoke_experiment["root"] / "generated.csv")
+    config = smoke_experiment["config"]
+    for row in rows:
+        if _truth(row.get("joint_uv_pass")):
+            assert _truth(row["film_proxy_pass"])
+            assert float(row["uvb_transmittance_ucb"]) <= config["reviewers"]["uvb_transmittance_max"]
+            assert float(row["uva_transmittance_ucb"]) <= config["reviewers"]["uva_transmittance_max"]
+        if _truth(row.get("most_pass")):
+            assert float(row["specific_energy_lcb"]) >= config["reviewers"]["specific_energy_min_wh_kg"]
+
+
 def test_reward_and_evaluator_models_are_independent(smoke_experiment):
     root = smoke_experiment["root"]
     reward = ReviewerBundle.load(root / "models" / "reward" / "reviewers.pkl")
@@ -83,6 +101,7 @@ def test_metrics_ablations_cards_and_reports_exist(smoke_experiment):
         "metrics/metrics_runs.csv", "metrics/metrics_summary.csv", "metrics/ablations.csv",
         "review/reviewed_top.csv", "review/provisional_shortlist.csv",
         "review/physical_oracle/oracle_queue.csv", "report/report.md", "report/presentation_7min.md",
+        "review/experimental_package/experimental_manifest.json",
     ):
         assert (root / relative).exists(), relative
     cards = list((root / "review" / "cards").glob("*.json"))
@@ -97,14 +116,23 @@ def test_reinvent_handoff_configs_are_valid_toml(smoke_experiment):
         import tomllib
     except ImportError:
         import tomli as tomllib
-    configs = sorted((smoke_experiment["root"] / "generator").glob("*.toml"))
-    assert len(configs) == 3
-    for path in configs:
+    generator = smoke_experiment["root"] / "generator"
+    staged = sorted(generator.glob("reinvent4_*.toml"))
+    transfer = sorted(generator.glob("transfer_learning_*.toml"))
+    assert len(staged) == 3
+    assert len(transfer) == 3
+    for path in staged:
         with path.open("rb") as handle:
             parsed = tomllib.load(handle)
         assert parsed["run_type"] == "staged_learning"
+        assert parsed["seed"] == smoke_experiment["config"]["execution"]["seeds"][0]
         assert len(parsed["stage"]) == 4
-        assert parsed["parameters"]["prior_file"] == "PRIOR_PATH_REQUIRED"
+        assert parsed["parameters"]["prior_file"].endswith("libinvent.prior")
+    for path in transfer:
+        with path.open("rb") as handle:
+            parsed = tomllib.load(handle)
+        assert parsed["run_type"] == "transfer_learning"
+        assert parsed["parameters"]["input_model_file"].endswith("libinvent.prior")
 
 
 def test_artifact_manifest_checksums(smoke_experiment):
@@ -126,7 +154,7 @@ def test_full_configuration_meets_acceptance_count():
     config = load_config(mode="full")
     assert len(config["execution"]["seeds"]) == 3
     assert config["execution"]["n_per_run"] >= 1_000
-    assert config["execution"]["reviewer_budget_per_run"] == config["execution"]["n_per_run"]
+    assert config["execution"]["reviewer_budget_per_run"] > config["execution"]["n_per_run"]
 
 
 def test_iso_claim_is_always_negative(smoke_experiment):

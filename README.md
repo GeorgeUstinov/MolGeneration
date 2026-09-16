@@ -1,45 +1,53 @@
-# MOSTGen
+# MolGenerate / MOSTGen
 
-`mostgen` is a reproducible research prototype for reaction-constrained design
-and conservative computational triage of single-molecule UV-absorbing
-molecular solar-thermal (MOST) photoswitches.  It implements the complete
-experiment contract—data provenance, family-aware generation, three matched
-search strategies, independent reviewers, hard safety vetoes, applicability
-domains, uncertainty-aware rewards, metrics, review cards, and reports—while
-remaining runnable on a CPU with Python's standard library.
+`MolGenerate.ipynb` — каноническая линейная реализация воспроизводимого
+скрининга одиночных UV-поглощающих MOST-фотопереключателей. Модульный пакет
+`mostgen` внутри notebook остаётся доступен как CLI.
 
-The built-in backend is an intentionally labelled **surrogate smoke backend**.
-It is suitable for testing the pipeline, not for making chemical or safety
-claims.  Production mode exports pinned REINVENT4/LibInvent job manifests and
-queues top candidates for GFN2-xTB plus sTDA-xTB.  It fails closed when those
-external tools, a reaction prior, or real labelled datasets are unavailable.
+## Что реально работает
 
-## Quick start
+- real-data adapters для M13 (включая M11/M12), M01, M05, U07, U09, U12,
+  U13 и U16;
+- исходный `database_matrix_MOST_UV_skin.xlsx` как каталог источников и
+  provenance, но не как молекулярная обучающая таблица;
+- отдельные endpoint ensembles: Random Forest reward и Extra Trees evaluator,
+  exact-Murcko scaffold split и 90% split-conformal uncertainty;
+- три family spaces: NBD/QC, Dewar-pyrimidinone, spiropyran/merocyanine;
+- установленный REINVENT4 v4.8.24, pinned commit, официальный LibInvent prior,
+  family transfer learning, настоящий staged RL и neural post-sampling;
+- exact-library gate без enumerative filler, hard psoralen/furocoumarin veto;
+- GFN2-xTB conformer/energy proxy и официальный xtb4stda/sTDA spectrum proxy;
+- matched полный reviewer-бюджет и размер result sets, машинный budget ledger,
+  diversity/AD/reward diagnostics, review cards, отчёт и пустой лабораторный
+  data package. Код не выполняет физические эксперименты.
+
+Доступные данные не содержат достаточной идентифицированной molecular ΔH
+таблицы. Поэтому energy reviewer не выдумывается, `ad_most=false`, а итоговый
+joint/shortlist закрывается до physical/experimental evidence. λmax-модель
+создаёт явно маркированный Gaussian-band proxy, не «полный измеренный спектр».
+
+## Запуск
 
 ```bash
-python -m mostgen run-all --mode smoke --output runs/smoke
-python -m unittest discover -s tests -v
+./venv/bin/python -m pytest -q
+./venv/bin/jupyter nbconvert --to notebook --execute --inplace MolGenerate.ipynb
+./venv/bin/python -m mostgen run-all --mode smoke --output runs/smoke
+./venv/bin/python -m mostgen run-all --mode production --output runs/production
 ```
 
-A full CPU benchmark uses the acceptance budget (three methods, three seeds,
-at least 1,000 valid unique molecules per run):
+CLI: `prepare-data`, `train-reviewers`, `sample-baselines`, `train-generator`,
+`generate`, `review`, `run-all`.
 
-```bash
-python -m mostgen run-all --mode full --output runs/full
-```
+`smoke` применяет только детерминированные synthetic fixtures для быстрых
+тестов. `full` и `production` используют real endpoint adapters и реальный
+LibInvent. Production config задаёт три seed и не менее 1000 уникальных
+структур на запуск; короткий выполненный notebook audit не выдаётся за этот
+критерий.
 
-Individual commands are available through `python -m mostgen --help`:
-`prepare-data`, `train-reviewers`, `sample-baselines`, `train-generator`,
-`generate`, `review`, and `run-all`.
+## Границы утверждений
 
-## Scientific boundary
-
-Outputs are screening proxies and research candidates.  They are not evidence
-of safety, cosmetic suitability, efficacy, or compliance with ISO 24444:2019
-or ISO 24443:2021.  A finished formulation/film must be tested, and
-phototoxicity requires experimental confirmation (for example OECD TG 432).
-No candidate with an uncertain phototoxicity assessment is shortlisted.
-
-See `docs/METHOD.md` for the implementation mapping, model-card limitations,
-and the production REINVENT4/xTB hand-off.
-
+Результаты — исследовательские screening candidates, не безопасные косметические
+ингредиенты. ISO 24444/24443 относятся к готовому продукту/формуляции. OECD TG
+432 и остальные лабораторные проверки не выполняются программой. Протокол и
+формат внешней передачи данных описаны в
+[`docs/EXPERIMENTAL_VALIDATION.md`](docs/EXPERIMENTAL_VALIDATION.md).

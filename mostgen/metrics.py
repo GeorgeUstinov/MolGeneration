@@ -175,6 +175,20 @@ def compute_metrics(
     write_csv(destination / "metrics_summary.csv", summary_rows)
     write_csv(destination / "ablations.csv", _ablation_rows(rows))
     write_csv(destination / "reward_diagnostics.csv", diagnostics)
-    result = {"run_metrics": run_rows, "summary": summary_rows, "matched_reviewer_budget": len({len(group) for group in grouped.values()}) == 1}
+    ledger_path = destination.parent / "search_budget_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {"runs": {}}
+    call_counts = {
+        int(item.get("candidate_reward_evaluations", -1))
+        for item in ledger.get("runs", {}).values()
+    }
+    result = {
+        "run_metrics": run_rows, "summary": summary_rows,
+        "matched_final_set_size": len({len(group) for group in grouped.values()}) == 1,
+        "matched_reviewer_budget": bool(call_counts) and len(call_counts) == 1,
+        "reviewer_call_counts": {
+            key: int(item.get("candidate_reward_evaluations", -1))
+            for key, item in sorted(ledger.get("runs", {}).items())
+        },
+    }
     (destination / "metrics.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return result

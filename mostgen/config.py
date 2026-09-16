@@ -39,6 +39,7 @@ def load_config(path: str | Path | None = None, mode: str = "full") -> dict[str,
     elif mode == "production":
         config["execution"]["mode"] = "production"
         config["execution"]["backend"] = "reinvent4"
+        config["oracle"]["run_automatically"] = True
         config["training_rows_per_family"] = 180
     else:
         raise ConfigError(f"Unknown mode: {mode}")
@@ -76,9 +77,16 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ConfigError("Synthon identifiers must be unique")
     if not 0.0 < float(config["reward"]["floor"]) < 1.0:
         raise ConfigError("Reward floor must be between zero and one")
+    reviewers = config.get("reviewers", {})
+    if float(reviewers.get("specific_energy_min_wh_kg", 0.0)) < 0.0:
+        raise ConfigError("specific_energy_min_wh_kg must be non-negative")
+    for key in ("uvb_transmittance_max", "uva_transmittance_max"):
+        if not 0.0 < float(reviewers.get(key, 0.0)) <= 1.0:
+            raise ConfigError(f"{key} must be in (0, 1]")
+    if float(reviewers.get("beer_lambert_loading_scale", 0.0)) <= 0.0:
+        raise ConfigError("beer_lambert_loading_scale must be positive")
 
 
 def dump_resolved_config(config: dict[str, Any], path: str | Path) -> None:
     clean = {k: v for k, v in config.items() if not k.startswith("_")}
     Path(path).write_text(json.dumps(clean, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mostgen"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reproducible reaction-constrained screening prototype for UV-absorbing MOST photoswitches"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,7 +15,10 @@ dependencies = [
   "pandas>=2.0",
   "PyYAML>=6.0",
   "rdkit>=2024.3",
-  "scikit-learn>=1.4"
+  "scikit-learn>=1.4",
+  "openpyxl>=3.1",
+  "ase>=3.23",
+  "xtb>=20.2"
 ]
 
 [project.optional-dependencies]

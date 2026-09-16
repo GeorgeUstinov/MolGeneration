@@ -24,9 +24,14 @@ def verify_experiment(root: str | Path, config: dict[str, Any]) -> dict[str, Any
         for seed in config["execution"]["seeds"]
     }
     minimum = int(config["execution"]["n_per_run"])
+    ledger_path = experiment / "search_budget_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {"runs": {}}
+    ledger_runs = ledger.get("runs", {})
+    expected_ledger_keys = {f"{method}:{seed}" for method, seed in expected_runs}
     required_columns = {
         "smiles", "charged_smiles", "family", "method_id", "seed", "uvb_auc", "uva_auc",
         "lambda_c_nm", "energy_kj_mol", "specific_energy_wh_kg", "half_life_h",
+        "specific_energy_lcb", "uvb_transmittance_ucb", "uva_transmittance_ucb", "film_proxy_pass",
         "phototoxicity_probability", "phototoxicity_uncertainty", "similarity_D_A", "similarity_D_B",
         "ad_spectral", "ad_most", "sa_score", "psoralen_alert", "joint_pass", "selected",
         "not_iso_certified",
@@ -34,7 +39,11 @@ def verify_experiment(root: str | Path, config: dict[str, Any]) -> dict[str, Any
     checks = {
         "all_expected_runs_present": set(grouped) == expected_runs,
         "minimum_unique_per_run": all(len({row["smiles"] for row in members}) >= minimum for members in grouped.values()),
-        "exact_matched_reviewer_budget": all(len(members) == int(config["execution"]["reviewer_budget_per_run"]) for members in grouped.values()),
+        "exact_output_count_per_run": all(len(members) == minimum for members in grouped.values()),
+        "exact_matched_reviewer_budget": set(ledger_runs) == expected_ledger_keys and all(
+            int(item.get("candidate_reward_evaluations", -1)) == int(config["execution"]["reviewer_budget_per_run"])
+            for item in ledger_runs.values()
+        ),
         "all_three_families": set(row["family"] for row in rows) == set(config["families"]),
         "zero_psoralen_cores": not any(_truth(row.get("psoralen_alert")) for row in rows),
         "zero_known_phototoxic_matches": not any(_truth(row.get("known_phototoxic_match")) for row in rows),

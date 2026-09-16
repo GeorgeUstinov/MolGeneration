@@ -7,7 +7,7 @@ import random
 from pathlib import Path
 from typing import Any, Iterable
 
-from .chemistry import build_pair, descriptors, murcko_scaffold, safety_veto
+from .chemistry import build_pair, descriptors, murcko_scaffold, parse_smiles, safety_veto
 from .numerics import critical_wavelength, trapezoid_auc
 from .provenance import sha256_file, stable_hash
 
@@ -101,7 +101,11 @@ def scaffold_split(scaffold: str) -> str:
 
 def enumerate_library(config: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    synthon_ids = [entry["id"] for entry in config["synthons"]]
+    prior_elements = set(config.get("production", {}).get("libinvent_supported_elements", config["elements"]))
+    synthon_ids = [
+        entry["id"] for entry in config["synthons"]
+        if {atom.GetSymbol() for atom in parse_smiles(entry["smiles"]).GetAtoms()} <= prior_elements
+    ]
     for family in sorted(config["families"]):
         for first in synthon_ids:
             for second in synthon_ids:
@@ -146,6 +150,15 @@ def prepare_data(config: dict[str, Any], output_dir: str | Path, root: str | Pat
     destination.mkdir(parents=True, exist_ok=True)
     root_path = Path(root)
     library = enumerate_library(config)
+    if config["execution"].get("mode") != "smoke":
+        # Import lazily: the smoke fixture remains lightweight, while full and
+        # production modes are prohibited from manufacturing endpoint labels.
+        from .real_data import prepare_real_data
+
+        manifest = prepare_real_data(config, destination, root_path, library)
+        manifest["training_rows"] = sum(manifest["endpoint_rows"].values())
+        manifest["library_rows"] = manifest["reaction_library_rows"]
+        return manifest
     per_family = int(config["training_rows_per_family"])
     rng = random.Random(int(config["project"]["default_seed"]))
     selected: list[dict[str, Any]] = []

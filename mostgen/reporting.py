@@ -30,6 +30,19 @@ def build_reports(experiment_dir: str | Path, config: dict[str, Any]) -> dict[st
         )
     family_counts = {family: sum(row["family"] == family for row in generated) for family in config["families"]}
     no_joint = sum(str(row.get("joint_pass", "")).lower() == "true" for row in generated) == 0
+    real_mode = bool(generated) and generated[0].get("reviewer_data_mode") == "real_endpoint_specific"
+    data_manifest_path = root / "data" / "data_manifest.json"
+    data_manifest = json.loads(data_manifest_path.read_text(encoding="utf-8")) if data_manifest_path.exists() else {}
+    generator_description = (
+        "настоящий REINVENT4/LibInvent staged-learning с family-specific TL agents и post-sampling"
+        if real_mode else "детерминированный reaction-library smoke-surrogate"
+    )
+    evidence_description = (
+        "Обучение выполнено на реальных endpoint-записях M13 (включая M11 Deep4Chem и M12 CDEx), M01, U07, U09, U12, U13 и U16; M05 используется как малая full-spectrum проверка. "
+        "Начальный Excel используется только как каталог источников/provenance. Таблица молекулярных ΔH недоступна, поэтому energy-модель не обучена и MOST/joint gate закрыт до GFN2-xTB/эксперимента."
+        if real_mode else
+        "Это smoke-проверка на метках `synthetic_smoke_only`; она тестирует программную механику, но не является научным обучением."
+    )
     report = f"""# Воспроизводимый скрининг UV-поглощающих MOST-фотопереключателей
 
 ## 1. Цель, область утверждений и вычислительный бюджет
@@ -38,23 +51,25 @@ def build_reports(experiment_dir: str | Path, config: dict[str, Any]) -> dict[st
 
 ISO 24444:2019 описывает in vivo определение SPF готового продукта, а ISO 24443:2021 — in vitro оценку UVA-защиты продукта. Поэтому ни одна молекула здесь не называется соответствующей ISO. Следующий уровень доказательности требует изготовления плёнки/формуляции и испытания продукта. Фототоксичность требует отдельной экспериментальной проверки, например OECD TG 432.
 
-Запуск: режим `{config['execution']['mode']}`, backend `{config['execution']['backend']}`, seeds `{config['execution']['seeds']}`. Лимиты: не более {config['project']['max_training_structures']} обучающих структур и {config['project']['max_gpu_hours']:.1f} GPU·ч; фактическая конфигурация заявляет {config['execution']['gpu_hours']:.1f} GPU·ч. Каждый метод получил ровно {config['execution']['reviewer_budget_per_run']} вызовов reward-reviewer на seed.
+Запуск: режим `{config['execution']['mode']}`, backend `{config['execution']['backend']}`, seeds `{config['execution']['seeds']}`. Лимиты: не более {config['project']['max_training_structures']} обучающих структур и {config['project']['max_gpu_hours']:.1f} GPU·ч; фактическая конфигурация заявляет {config['execution']['gpu_hours']:.1f} GPU·ч. Для matched comparison каждый метод получает ровно {config['execution']['reviewer_budget_per_run']} reward-reviewer evaluations на seed и сохраняет одинаковые {config['execution']['n_per_run']} структур. Для LibInvent бюджет состоит из curriculum optimization и финального scoring; фактические вызовы всех методов записаны в `search_budget_ledger.json`.
 
 ## 2. Генеративное пространство и сравниваемые методы
 
 Три семейства запускались как family-aware пространства с фиксированными реакционными каркасами и двумя разрешёнными позициями замещения: NBD/QC как основной физически определённый класс, Dewar-pyrimidinone как малодатовый экспериментальный класс и spiropyran/merocyanine как проверка переносимости. Заряженный изомер строился детерминированно; RDKit проверял валентность, санитаризацию и равенство молекулярной формулы пары. Размеры фактически оценённых подмножеств: `{family_counts}`.
 
-Сравнены (i) случайный reaction-constrained prior, (ii) adaptive weighted-retraining по той же библиотеке синтонов и (iii) curriculum-поиск, являющийся CPU-заместителем LibInvent RL. Для production hand-off созданы отдельные REINVENT4/LibInvent manifests по семействам. Smoke backend не является нейросетевым REINVENT prior и не должен так интерпретироваться.
+Сравнены (i) случайный reaction-constrained prior, (ii) adaptive weighted-retraining по той же библиотеке синтонов и (iii) {generator_description}. В реальном режиме neural output принимается только при точном совпадении с версионированной библиотекой допустимых продуктов; enumerative filler не используется.
 
 Curriculum последовательно открывает валидность/семейство/пару, спектр, MOST, затем безопасность/SA/AD. Награда — взвешенное геометрическое среднее непрерывных sigmoid/interval-компонентов с floor `{config['reward']['floor']}`. ECFP-centroid filter штрафует повторное заселение кластеров. Таблица `reward_diagnostics.csv` позволяет проверить долю ненулевых наград, effective sample size, баланс компонентов и scaffold collapse.
 
 ## 3. Reviewer-модели, неопределённость и применимость
 
-Pipeline сохраняет scaffold split до обучения и проверяет отсутствие пересечения scaffold между train/validation/test. Reward-модели и независимые evaluator-модели сериализованы раздельно: первые используют ensemble Random Forest и направляют поиск, вторые — отдельный ensemble Extra Trees и переоценивают только top-кандидатов. MOST-регрессии разделены по семействам. Spectrum reviewer предсказывает сетку 290–400 нм с шагом 5 нм; из неё интегрируются UVB AUC, UVA AUC, critical-wavelength proxy и условная Beer–Lambert transmittance.
+Pipeline сохраняет exact-Murcko scaffold split до обучения и проверяет отсутствие пересечения scaffold между train/validation/test. Reward-модели и независимые evaluator-модели сериализованы раздельно: первые используют ensemble Random Forest и направляют поиск, вторые — отдельный ensemble Extra Trees и переоценивают только top-кандидатов. В real mode λmax превращается в явно маркированный Gaussian-band proxy; он не выдаётся за измеренный полный спектр. Из proxy интегрируются UVB AUC, UVA AUC, critical-wavelength proxy и условная Beer–Lambert transmittance.
 
-Joint UV-pass требует, чтобы нижняя 90%-я доверительная граница обоих AUC была не хуже медианы соответствующего семейства и чтобы нижняя граница λc-proxy была не ниже {config['reviewers']['lambda_c_min_nm']:.0f} нм. MOST-pass требует положительную нижнюю границу ΔH, результат не хуже семейной медианы и средний t½ в окне {config['reviewers']['half_life_window_hours'][0]:.0f}–{config['reviewers']['half_life_window_hours'][1]:.0f} ч. Высокий прогноз вне fingerprint-domain не засчитывается.
+Joint UV-pass требует, чтобы нижняя 90%-я доверительная граница обоих AUC была не хуже медианы, нижняя граница λc-proxy была не ниже {config['reviewers']['lambda_c_min_nm']:.0f} нм, а worst-side conditional Beer–Lambert transmittance не превышала заданных UVB/UVA порогов. MOST-pass требует положительную нижнюю границу ΔH, результат не хуже семейной медианы, specific-energy LCB ≥{config['reviewers']['specific_energy_min_wh_kg']:.0f} Wh·kg⁻¹ и средний t½ в окне {config['reviewers']['half_life_window_hours'][0]:.0f}–{config['reviewers']['half_life_window_hours'][1]:.0f} ч. Высокий прогноз вне fingerprint-domain не засчитывается.
 
-В текущем демонстрационном запуске метки reviewer-набора имеют evidence tier `synthetic_smoke_only`. Они создают проверяемую задачу для программного контура, но не заменяют M01/M03/M04/M11–M13 или U07–U17. Production mode специально отказывается обучаться на synthetic-only данных.
+{evidence_description}
+
+Число endpoint-записей: `{data_manifest.get('endpoint_rows', 'см. data_manifest.json')}`. M03 не был использован: API Dryad возвращает HTTP 401 без bearer token; нулевой partial-файл исключён. M04 сохранён как физический reference, но не превращён в labels без надёжной идентификации структур.
 
 ## 4. Safety gate и правила shortlist
 
@@ -68,19 +83,19 @@ Joint UV-pass требует, чтобы нижняя 90%-я доверител�
 
 Сгенерировано {len(generated)} строк; независимый evaluator пересмотрел {review['reviewed']}, provisional joint-pass получили {review['independent_joint_pass']}. После физического oracle выбрано {review['selected_after_physical_oracle']}. Статус oracle: `{review['physical_oracle']['status']}`. При отсутствии xTB/sTDA pipeline не подставляет суррогатный «квантовый» результат и оставляет `selected=false` — это намеренное fail-closed поведение.
 
-Bootstrap-интервалы агрегируют три seed-запуска в full mode. `ablations.csv` показывает эффекты снятия uncertainty, safety, AD и diversity gates; сравнение curriculum с prior следует читать как matched-budget методическое сравнение, а не как доказательство превосходства на реальных данных.
+В production-конфигурации bootstrap-интервалы агрегируют три seed-запуска; короткий audit с одним seed не оценивает межзапусковую устойчивость. `ablations.csv` показывает эффекты снятия uncertainty, safety, AD и diversity gates; сравнение curriculum с prior следует читать как matched-set методическое сравнение, а не как доказательство превосходства на реальных данных.
 
 ## 6. Вывод, ограничения и следующий эксперимент
 
 {'В этом запуске не найдено кандидатов, прошедших исходный joint gate. Это допустимый научный результат: таблицы причин отказа показывают конфликт требований и неопределённость; он не доказывает физическую невозможность.' if no_joint else 'Некоторые структуры прошли внутренний reward gate, но они остаются вычислительными гипотезами и требуют независимого физического и экспериментального подтверждения.'}
 
-Следующий этап: подключить лицензированные/открытые записи M01/M03/M04 и M11–M13 с единицами, состояниями и условиями; U07–U17 — с endpoint-specific splits; зафиксировать commit REINVENT4 и checksum reaction prior; затем выполнить GFN2-xTB conformer review и sTDA-xTB broadened spectrum для 50–100 top-кандидатов. После синтеза нужны проверка идентичности обоих изомеров, циклируемость, quantum yield, растворитель/плёнка, OECD TG 432 и тестирование готовой формуляции по применимым стандартам.
+Следующий этап: получить надёжно идентифицированные молекулярные ΔH/ΔG‡/t½ записи M03/M04 и дополнительные U07–U17 endpoint-данные; затем выполнить GFN2-xTB conformer review и sTDA-xTB broadened spectrum для 50–100 top-кандидатов. После синтеза нужны проверка идентичности обоих изомеров, циклируемость, quantum yield, растворитель/плёнка, OECD TG 432 и тестирование готовой формуляции по применимым стандартам.
 
 ## Приложение A. Протокол воспроизводимости и аудит данных
 
 Единицей эксперимента считается тройка `method_id × seed × resolved configuration`. Для неё фиксируются версия Python, путь интерпретатора, версии RDKit/NumPy/Pandas/scikit-learn, платформа, команда запуска, абсолютные пути исходных файлов, SHA-256 каждого локального входа и полный registry внешних источников. URL без локально зафиксированного артефакта получают явный checksum-статус `NOT_FETCHED_NO_LOCAL_ARTIFACT`, а не фиктивный хеш. После завершения создаётся `artifact_manifest.json` с размером и SHA-256 каждого результата. Это позволяет отличить научно значимое изменение конфигурации от случайной подмены входного файла.
 
-Исходные XLSX/DOCX/PPTX не копируются поверх и не редактируются. Таблицы `reviewer_training.csv` и `reaction_library.csv` являются производными и живут только внутри каталога запуска. Каждая обучающая строка несёт `source_id`, `source_kind`, `evidence_tier`, состояние фотопереключателя, температуру, среду и уровень метки. Такая схема нужна, чтобы молекулярную метку не спутать с измерением плёнки или готовой формуляции. В production-наборе рядом с нормализованным значением должны храниться исходное значение, исходная единица и правило преобразования; fixture-набор использует уже фиксированные единицы и не маскируется под эксперимент.
+Исходные XLSX/DOCX/PPTX не копируются поверх и не редактируются. В real mode производная таблица `reviewer_endpoints.csv` содержит source_id, endpoint, исходные условия, состояние и label-level; `full_spectra.csv` хранится отдельно. Начальный `database_matrix_MOST_UV_skin.xlsx` распарсен в `source_catalog_from_initial_excel.csv`, но не является таблицей SMILES/labels и не входит в fit. `reaction_library.csv` — отдельное дискретное пространство генерации.
 
 Scaffold split рассчитывается до fit. Один и тот же generic Murcko scaffold не может появиться в разных split, а loader повторно проверяет пересечение и останавливает обучение при leakage. Validation служит выбору/калибровке, test — финальной диагностике. ITI обозначен только как validation-only class shift и не включён в три генеративных семейства. Малые M03/M04 должны использоваться прежде всего для физической проверки и оценки переноса; литературные M08–M10 не трактуются как доступные виртуальные библиотеки. Регуляторные U01/U03/U06 остаются справочниками, а не автоматически размеченными обучающими строками.
 
@@ -96,7 +111,7 @@ Bootstrap выполняется по трём независимым seed-ре�
 
 ## Приложение C. Переход от прототипа к физическому исследованию
 
-`train-generator` создаёт отдельный REINVENT4 v{config['production']['reinvent4_version']} TOML для каждого семейства, scaffold-файл с двумя attachment points и ExternalProcess bridge к тем же reward-reviewers. Конфигурация использует staged learning, DAP, четыре curriculum stages и PenalizeSameSmiles. Суммарный batch/step budget приблизительно согласован с matched reviewer budget. Production preflight требует установленный `reinvent`, существующий LibInvent prior, совпадающий SHA-256 и полный xTB/sTDA toolchain. Отсутствие любого обязательного артефакта завершает запуск ошибкой до выдачи научного результата.
+`train-generator` создаёт отдельный REINVENT4 v{config['production']['reinvent4_version']} TOML для каждого `family × seed`, scaffold-файл с двумя attachment points и ExternalProcess bridge к reward-reviewers. Конфигурация использует family TL, staged learning, DAP, четыре curriculum stages и PenalizeSameSmiles. Production preflight требует установленный `reinvent`, существующий LibInvent prior с совпадающим SHA-256 и полный xTB/sTDA toolchain. Отсутствие обязательного артефакта завершает запуск ошибкой до выдачи научного результата.
 
 Для physical oracle RDKit создаёт восемь конформеров обоих состояний, выполняет MMFF/UFF pre-relaxation и сохраняет лучший XYZ. Затем GFN2-xTB должен независимо оптимизировать обе структуры; разность электронных энергий не подменяет свободную энергию, но служит внешней проверкой знака и масштаба storage proxy. sTDA-xTB даёт переходы, которые необходимо уширить с явно записанной шириной линии и повторно интегрировать по UVB/UVA. Расчёты не возвращаются во внутренний RL loop, поэтому сохраняется независимость внешней проверки.
 
@@ -122,14 +137,14 @@ Bootstrap выполняется по трём независимым seed-ре�
 
 ## Слайд 3 — Matched-budget дизайн (1:35–2:25)
 
-- Prior random vs weighted retraining vs LibInvent curriculum surrogate.
-- {config['execution']['reviewer_budget_per_run']} reviewer-вызовов на method × seed.
+- Prior random vs weighted retraining vs {generator_description}.
+- {config['execution']['reviewer_budget_per_run']} reward-reviewer evaluations и {config['execution']['n_per_run']} сохранённых кандидатов на method × seed.
 - REINVENT4 manifests отделены от CPU smoke backend.
 
 ## Слайд 4 — Reward и reviewer independence (2:25–3:25)
 
 - Spectrum 290–400 нм → UVB/UVA AUC, λc, Beer–Lambert proxy.
-- Family-specific ΔH/Wh·kg⁻¹/log(t½); safety Kp/phototoxicity.
+- λmax/kinetics/Kp/phototoxicity/sensitization models; ΔH intentionally missing.
 - Random Forest reward ≠ Extra Trees evaluator; scaffold split + AD + uncertainty.
 
 ## Слайд 5 — Жёсткая безопасность (3:25–4:20)
@@ -149,7 +164,7 @@ Bootstrap выполняется по трём независимым seed-ре�
 ## Слайд 7 — Решение и следующий шаг (5:40–7:00)
 
 - Отсутствие joint-pass — информативный результат, не доказательство невозможности.
-- Заменить fixture labels реальными M/U datasets; pin prior + commit + checksums.
+- Добавить идентифицированные ΔH/ΔG‡ labels и расширить малые safety/kinetics endpoints.
 - GFN2/sTDA-xTB top-50–100 → синтез → OECD TG 432 → испытание плёнки/формуляции.
 """
     slides_path = output / "presentation_7min.md"

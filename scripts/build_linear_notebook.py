@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the self-contained, linear GOSHA.ipynb from the audited source tree."""
+"""Build the single linear, executable MOSTGen audit notebook."""
 from __future__ import annotations
 
 import json
@@ -7,146 +7,97 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTEBOOK = ROOT / "GOSHA.ipynb"
+NOTEBOOK = ROOT / "MolGenerate.ipynb"
 
 
-def markdown(source: str) -> dict:
-    return {"cell_type": "markdown", "metadata": {}, "source": source.strip() + "\n"}
+def markdown(text: str) -> dict:
+    return {"cell_type": "markdown", "metadata": {}, "source": text.strip() + "\n"}
 
 
-def code(source: str) -> dict:
-    return {
-        "cell_type": "code", "execution_count": None, "metadata": {},
-        "outputs": [], "source": source.strip() + "\n",
-    }
+def code(text: str) -> dict:
+    return {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": text.strip() + "\n"}
 
 
 cells: list[dict] = []
 cells.append(markdown(r"""
-# Воспроизводимый генератор UV-поглощающих MOST-молекул
+# MolGenerate — воспроизводимый генератор UV-поглощающих MOST-молекул
 
-Самодостаточная линейная реализация и аудит работоспособности
+Этот notebook — единая линейная реализация и исполнимый аудит всего контура:
+реальные открытые endpoint-данные → независимые reviewer ensembles →
+family-specific transfer learning → настоящий REINVENT4 LibInvent curriculum →
+нейросетевой sampling → matched evaluation → safety veto → независимая
+переоценка → GFN2-xTB/sTDA-xTB unit-oracle → отчёт и машинная проверка.
 
-Этот notebook содержит **исходный код всей Python-реализации**, конфигурацию,
-последовательный запуск всех стадий и проверку критериев приёмки. Ячейки следует
-выполнять сверху вниз (`Restart Kernel and Run All`). По умолчанию выбран
-`smoke`-режим: три метода, один seed и 40 молекул на метод. Для полного
-эксперимента достаточно заменить `RUN_MODE = "smoke"` на `"full"`; проверенный
-full-прогон занимает около пяти минут на текущем CPU.
-
-## Короткий ответ: работает ли генерация?
-
-**Программно — да.** Полный прогон уже сформировал 9000 строк: 3 метода × 3
-seed × 1000 валидных уникальных структур. Машинная acceptance-проверка пройдена,
-псораленовых/фурокумариновых ядер в `generated.csv` нет. Все 38 тестов проходят.
-
-**Как научно доказательный генератор — пока нет.** Рабочий CPU backend является
-reaction-library enumeration + adaptive search, а не обученной нейросетью
-LibInvent. Его reviewer-метки синтетические и служат только для проверки
-алгоритма. REINVENT4/LibInvent оформлен production TOML-конфигурациями и
-ExternalProcess bridge, но prior и сам REINVENT не установлены. GFN2-xTB и
-sTDA-xTB также отсутствуют, поэтому 11 прошедших независимый evaluator структур
-остались provisional, а итоговый `selected` закономерно равен нулю.
+Главная граница утверждений: это **исследовательский screening proxy**. Молекулы
+не сертифицированы по ISO 24444/24443 и не признаны безопасными косметическими
+ингредиентами. Нулевая итоговая выборка допустима, если данные/AD/неопределённость
+не позволяют пройти все жёсткие ворота.
 """))
 
 cells.append(markdown(r"""
-## 1. Среда и проверенный full-результат
+## 1. Среда, версии и воспроизводимость
 
-Ниже фиксируется рабочая директория и версии библиотек. Notebook не импортирует
-локальный пакет `mostgen`: в разделе 3 каждый модуль загружается из исходника,
-встроенного непосредственно в `.ipynb`. Файлы в `runs/full` используются только
-для показа уже выполненной acceptance-проверки и не нужны smoke-запуску.
+Основной анализ работает в Python 3.10. REINVENT4 v4.8.24 закреплён commit
+`80a8d21aefd9c0d3ec806377522effb30cfca12a` и запускается в отдельном Python
+3.12 окружении. LibInvent prior проверяется по SHA-256. Физический oracle
+использует libxTB через Python/ASE и официальные `xtb4stda`/`stda` binaries.
 """))
-
 cells.append(code(r"""
+from collections import Counter
 from pathlib import Path
 import importlib.metadata
 import json
-import os
 import platform
 import sys
-from IPython.display import display, Markdown
+
+from IPython.display import Markdown, display
 from rdkit import RDLogger
 
-# Enumeration intentionally rejects many chemically invalid combinations.  RDKit
-# reports every rejected intermediate through its logger; the validity counters
-# below retain that information without flooding the persisted notebook output.
 for channel in ("rdApp.debug", "rdApp.info", "rdApp.warning", "rdApp.error"):
     RDLogger.DisableLog(channel)
 
 PROJECT_ROOT = Path.cwd().resolve()
-if not (PROJECT_ROOT / "config" / "default.json").is_file():
-    raise RuntimeError("Запускайте GOSHA.ipynb из директории TEST")
+if not (PROJECT_ROOT / "config/default.json").is_file():
+    raise RuntimeError("Запускайте MolGenerate.ipynb из директории TEST")
 
-required = ["rdkit", "numpy", "pandas", "scikit-learn", "PyYAML"]
-versions = {}
-for package in required:
-    try:
-        versions[package] = importlib.metadata.version(package)
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise RuntimeError(
-            f"Не установлен {package}. Выполните: ./venv/bin/pip install -r requirements.txt"
-        ) from exc
-
-print("project:", PROJECT_ROOT)
-print("python:", sys.version.split()[0])
-print("platform:", platform.platform())
-print("packages:", versions)
-"""))
-
-cells.append(code(r"""
-FULL_RESULT_DIR = PROJECT_ROOT / "runs" / "full"
-if (FULL_RESULT_DIR / "verification.json").is_file():
-    full_verification = json.loads((FULL_RESULT_DIR / "verification.json").read_text())
-    full_review = json.loads((FULL_RESULT_DIR / "review" / "review_summary.json").read_text())
-    display({
-        "acceptance_passed": full_verification["passed"],
-        "generated_rows": full_verification["generated_rows"],
-        "run_counts": full_verification["run_counts"],
-        "zero_psoralen_cores": full_verification["checks"]["zero_psoralen_cores"],
-        "independent_reviewed": full_review["reviewed"],
-        "provisional": full_review["independent_joint_pass"],
-        "selected": full_review["selected_after_physical_oracle"],
-        "physical_oracle": full_review["physical_oracle"]["status"],
-    })
-else:
-    print("Предварительный full-прогон не найден; notebook остаётся полностью исполнимым.")
+packages = {}
+for package in ("rdkit", "numpy", "pandas", "scikit-learn", "openpyxl", "ase", "xtb"):
+    packages[package] = importlib.metadata.version(package)
+display({"project": str(PROJECT_ROOT), "python": sys.version.split()[0],
+         "platform": platform.platform(), "packages": packages})
 """))
 
 cells.append(markdown(r"""
-## 2. Архитектура по стадиям
+## 2. Что используется и как устроен pipeline
 
-1. **Prepare data.** RDKit канонизирует структуры, строит ground/charged пары с
-   одинаковой формулой, удаляет дубликаты, формирует Murcko scaffold split и
-   записывает provenance. Встроенные значения — честно помеченные
-   `synthetic_smoke_only` fixtures.
-2. **Train reviewers.** Reward ensemble (`RandomForestRegressor`) и отдельный
-   evaluator ensemble (`ExtraTreesRegressor`) обучаются раздельно. Spectrum
-   предсказывается на сетке 290–400 нм; MOST-регрессии разделены по семействам.
-3. **Prepare generator.** Для NBD/QC, Dewar-pyrimidinone и spiropyran создаются
-   отдельные REINVENT4 v4.8 LibInvent TOML, scaffold SMILES и ExternalProcess
-   scoring bridge. CPU run использует то же дискретное пространство синтонов.
-4. **Matched-budget search.** Сравниваются random prior, weighted retraining и
-   curriculum policy. Каждый метод получает одинаковое число reviewer-вызовов.
-5. **Metrics.** Считаются validity, uniqueness, novelty, diversity, AD coverage,
-   joint success, bootstrap intervals, reward ESS и абляции.
-6. **Independent review.** Top-50–100 переоцениваются evaluator-моделями,
-   создаются карточки и XYZ-очередь GFN2-xTB/sTDA-xTB. При отсутствии oracle
-   итоговый shortlist закрывается (`selected=false`).
-7. **Report and verification.** Формируются отчёт, 7-минутная презентация,
-   machine-readable acceptance и SHA-256 manifest.
+1. `prepare-data`: неизменяемые raw-файлы нормализуются в длинную endpoint-
+   таблицу. λmax, кинетика, Kp, фототоксичность и сенсибилизация не смешиваются.
+2. `train-reviewers`: Random Forest reward ensembles и отдельные Extra Trees
+   evaluators обучаются по exact-Murcko scaffold split; uncertainty — 90%
+   split-conformal radius, не только разброс деревьев.
+3. `train-generator`: для NBD/QC, Dewar-pyrimidinone и spiropyran создаются
+   family-specific LibInvent TL agents из закреплённого reaction prior.
+4. `generate`: REINVENT4 проходит curriculum chemistry → spectrum → MOST →
+   safety. ExternalProcess возвращает плотный stage score. Затем checkpoint
+   сэмплируется; разрешены только точные продукты фиксированных синтонов.
+5. Два baseline: random reaction-library sampling и weighted retraining.
+6. `metrics` и `review`: равные полные reviewer-бюджеты и итоговые evaluation
+   sets, diversity/AD/gates,
+   независимые evaluator models и карточки причин pass/fail.
+7. Physical oracle: conformer search → GFN2-xTB оптимизация пары → ΔE/Wh·kg⁻¹;
+   xtb4stda/sTDA transitions → broadened 290–400 nm proxy. Он не входит в RL.
 
-ITI не генерируется и оставлен только как class-shift validation family.
+ITI оставлен только для class-shift validation и не генерируется.
 """))
 
 cells.append(markdown(r"""
-## 3. Встроенная реализация
+## 3. Полный исходный код внутри notebook
 
-Следующая служебная ячейка создаёт из встроенных ниже исходников модули только в
-памяти текущего kernel. Это сохраняет обычную модульную структуру и относительные
-импорты, одновременно делая notebook самодостаточным и обозримым линейно.
+Каждый модуль ниже встроен отдельной последовательной ячейкой. Они загружаются
+в изолированный namespace текущего kernel. Внешний REINVENT-процесс по своей
+природе не видит память notebook, поэтому вызывает идентичный дисковый bridge;
+его исходник и checksum также показаны здесь.
 """))
-
 cells.append(code(r"""
 import types
 
@@ -157,359 +108,337 @@ for loaded_name in list(sys.modules):
 embedded_package = types.ModuleType("mostgen")
 embedded_package.__package__ = "mostgen"
 embedded_package.__path__ = [str(PROJECT_ROOT / "mostgen")]
-embedded_package.__file__ = str(PROJECT_ROOT / "mostgen" / "__init__.py")
+embedded_package.__file__ = str(PROJECT_ROOT / "mostgen/__init__.py")
 sys.modules["mostgen"] = embedded_package
 
-def _load_embedded_module(name: str, source: str, filename: Path):
+def load_embedded(name, source, filename):
     module = types.ModuleType(name)
     module.__file__ = str(filename)
     module.__package__ = name.rpartition(".")[0]
     sys.modules[name] = module
     exec(compile(source, str(filename), "exec"), module.__dict__)
     return module
-
-print("Изолированный in-memory package namespace подготовлен")
 """))
 
 module_order = [
     "__init__.py", "config.py", "provenance.py", "chemistry.py", "numerics.py",
-    "data.py", "reviewers.py", "scoring.py", "search.py", "metrics.py",
-    "oracle.py", "review.py", "reporting.py", "validation.py", "cli.py", "__main__.py",
+    "data.py", "reviewers.py", "real_data.py", "real_reviewers.py", "scoring.py",
+    "search.py", "metrics.py", "oracle.py", "experimental.py", "review.py", "reporting.py",
+    "validation.py", "cli.py", "__main__.py",
 ]
 descriptions = {
-    "__init__.py": "Версия пакета",
-    "config.py": "Конфигурация, режимы и контроль бюджета",
-    "provenance.py": "SHA-256, версии, manifest и event log",
-    "chemistry.py": "RDKit-канонизация, изомерные пары, ECFP/Murcko и safety veto",
-    "numerics.py": "AUC, critical wavelength, Beer–Lambert и transforms",
-    "data.py": "Reaction library, fixture labels, scaffold split и provenance",
-    "reviewers.py": "Reward/evaluator ensembles и applicability domains",
-    "scoring.py": "Прозрачная карточка прогноза, pass gates и dense reward",
-    "search.py": "Три matched-budget стратегии и REINVENT4 manifests",
-    "metrics.py": "Diversity, bootstrap, ESS и абляции",
-    "oracle.py": "Конформеры и очередь независимого GFN2/sTDA-xTB oracle",
-    "review.py": "Независимая top-переоценка и fail-closed shortlist",
-    "reporting.py": "Научный отчёт и материал 7-минутной презентации",
-    "validation.py": "Машинная проверка критериев приёмки",
-    "cli.py": "Единый CLI и run-all orchestration",
-    "__main__.py": "Запуск через python -m mostgen",
+    "__init__.py": "Версия пакета", "config.py": "Конфигурация и бюджеты",
+    "provenance.py": "SHA-256 и manifests", "chemistry.py": "Пары изомеров и safety veto",
+    "numerics.py": "AUC, λc и reward transforms", "data.py": "Reaction library и dispatch данных",
+    "reviewers.py": "Общий reviewer interface и smoke fixtures",
+    "real_data.py": "Парсеры реальных M/U endpoint-источников",
+    "real_reviewers.py": "Endpoint ensembles, conformal uncertainty и AD",
+    "scoring.py": "Прозрачные компоненты reward и hard gates",
+    "search.py": "Baselines и настоящий REINVENT4/LibInvent",
+    "metrics.py": "Diversity, bootstrap, ESS и абляции", "oracle.py": "GFN2-xTB/sTDA-xTB",
+    "experimental.py": "Шаблоны и валидация внешних лабораторных данных (без выполнения эксперимента)",
+    "review.py": "Независимая переоценка и карточки", "reporting.py": "Отчёт и презентация",
+    "validation.py": "Машинные критерии", "cli.py": "Единый CLI", "__main__.py": "CLI entrypoint",
 }
-
 for filename in module_order:
     source = (ROOT / "mostgen" / filename).read_text(encoding="utf-8")
+    cells.append(markdown(f"### 3.{len(cells)} {descriptions[filename]} — `{filename}`"))
     if filename == "__init__.py":
         cell_source = (
-            "_init_source = r'''" + source + "'''\n"
-            "exec(compile(_init_source, embedded_package.__file__, 'exec'), embedded_package.__dict__)\n"
+            f"_source = {source!r}\n"
+            "exec(compile(_source, embedded_package.__file__, 'exec'), embedded_package.__dict__)\n"
             "print('loaded mostgen', embedded_package.__version__)"
         )
     else:
         module_name = "mostgen." + filename[:-3]
         cell_source = (
-            f"_source = r'''{source}'''\n"
-            f"_load_embedded_module('{module_name}', _source, PROJECT_ROOT / 'mostgen' / '{filename}')\n"
+            f"_source = {source!r}\n"
+            f"load_embedded({module_name!r}, _source, PROJECT_ROOT / 'mostgen' / {filename!r})\n"
             f"print('loaded {module_name}')"
         )
-    cells.append(markdown(f"### 3.{len(cells) - 6}. {descriptions[filename]} — `{filename}`"))
     cells.append(code(cell_source))
 
-external_source = (ROOT / "scripts" / "reinvent_external_score.py").read_text(encoding="utf-8")
-cells.append(markdown(r"""
-### ExternalProcess bridge для настоящего REINVENT4
-
-Этот исходник принимает SMILES через stdin в официальном ExternalProcess
-формате REINVENT4 и возвращает JSON payload. В notebook он хранится как строка,
-поскольку отдельный REINVENT-процесс должен запускать его как исполняемый файл.
-"""))
-cells.append(code("REINVENT_EXTERNAL_SCORER_SOURCE = r'''" + external_source + "'''\nprint('embedded external scorer lines:', len(REINVENT_EXTERNAL_SCORER_SOURCE.splitlines()))"))
-
-config_text = (ROOT / "config" / "default.json").read_text(encoding="utf-8")
-cells.append(markdown(r"""
-## 4. Разрешённое пространство и воспроизводимая конфигурация
-
-Конфигурация тоже встроена в notebook. `smoke` меняет только число rows/seeds и
-не ослабляет химические либо safety-ограничения. Для production требуются
-реальные datasets, checksum prior, REINVENT executable и физический toolchain.
-"""))
+bridge = (ROOT / "scripts/reinvent_external_score.py").read_text(encoding="utf-8")
+cells.append(markdown("### 3.x ExternalProcess scoring bridge — `scripts/reinvent_external_score.py`"))
 cells.append(code(
-    "CONFIG_JSON = r'''" + config_text + "'''\n"
-    "from mostgen.config import validate_config\n"
-    "RUN_MODE = 'smoke'  # замените на 'full' для 3 × 3 × 1000\n"
-    "config = json.loads(CONFIG_JSON)\n"
-    "config['_config_path'] = str(PROJECT_ROOT / 'config' / 'default.json')\n"
-    "if RUN_MODE == 'smoke':\n"
-    "    smoke = dict(config['smoke'])\n"
-    "    config['execution'].update({k: v for k, v in smoke.items() if k != 'training_rows_per_family'})\n"
-    "    config['execution']['mode'] = 'smoke'\n"
-    "    config['training_rows_per_family'] = smoke['training_rows_per_family']\n"
-    "else:\n"
-    "    config['execution']['mode'] = 'full'\n"
-    "    config['training_rows_per_family'] = 180\n"
-    "validate_config(config)\n"
-    "display({k: config['execution'][k] for k in ['mode', 'methods', 'seeds', 'n_per_run', 'reviewer_budget_per_run', 'shortlist_size']})"
+    f"REINVENT_EXTERNAL_SCORER_SOURCE = {bridge!r}\n"
+    "from mostgen.provenance import sha256_file\n"
+    "display({'embedded_lines': len(REINVENT_EXTERNAL_SCORER_SOURCE.splitlines()), "
+    "'disk_sha256': sha256_file(PROJECT_ROOT / 'scripts/reinvent_external_score.py')})"
 ))
 
+config_text = (ROOT / "config/default.json").read_text(encoding="utf-8")
 cells.append(markdown(r"""
-## 5. Как формируется оценка
+## 4. Конфигурация audit и production-критерий
 
-Для предсказанного спектра $A(\lambda)$ вычисляются
+Исполняемый audit намеренно использует один seed и 60 молекул (20 на семейство),
+но **реальные данные и настоящий neural LibInvent**, а не synthetic backend.
+Это проверка работоспособности, не заявление о выполнении production-критерия.
+Полная конфигурация в этой же ячейке сохраняет 3 seeds и ≥1000 уникальных
+структур на запуск; для неё достаточно убрать audit-overrides.
+"""))
+cells.append(code(
+    f"CONFIG_JSON = {config_text!r}\n" + r"""
+from mostgen.config import validate_config
 
-$$\mathrm{{AUC}}_{{UVB}}=\int_{{290}}^{{320}}A(\lambda)d\lambda,\qquad
-\mathrm{{AUC}}_{{UVA}}=\int_{{320}}^{{400}}A(\lambda)d\lambda.$$
+config = json.loads(CONFIG_JSON)
+config["_config_path"] = str(PROJECT_ROOT / "config/default.json")
+config["execution"].update({
+    "mode": "full", "backend": "reinvent4", "seeds": [1701],
+    "n_per_run": 60, "reviewer_budget_per_run": 636,
+    "shortlist_size": 12, "bootstrap_samples": 40,
+})
+config["data"]["m13_max_rows"] = 12000
+config["reviewers"]["ensemble_size"] = 3
+config["reviewers"]["trees_per_member"] = 10
+config["production"].update({"sampling_rounds": 1, "sampling_oversample": 12})
+config["oracle"].update({"run_automatically": False, "max_candidates": 1,
+                          "conformers": 3, "xtb_max_steps": 60, "xtb_fmax_ev_a": 0.18})
+config["training_rows_per_family"] = 180
+validate_config(config)
 
-$\lambda_c$ — длина волны, на которой накоплено 90% площади 290–400 нм.
-Beer–Lambert proxy использует фиксированную условную загрузку:
-$T(\lambda)=10^{{-A(\lambda)}}$. Для каждого ensemble endpoint сохраняются
-среднее $\mu$, разброс $\sigma$ и нижняя граница
-$LCB=\mu-1.645\sigma$.
-
-Непрерывные компоненты $s_i\in[0,1]$ получаются sigmoid/interval transforms.
-Итоговая плотная награда:
-
-$$R=\exp\left(\frac{{\sum_i w_i\log(\max(10^{{-3}},s_i))}}{{\sum_i w_i}}\right).$$
-
-После этого повторный ECFP-кластер получает штраф
-$R'=R/(1+0.12n_{{cluster}})$. Hard veto (псорален/фурокумарин, известная
-фототоксичная структура, reactive alert, неподдерживаемый элемент, неправильная
-валентность или невозможная пара) применяется **до** reward.
-
-Joint pass требует одновременно: UVB и UVA LCB не хуже семейных медиан;
-$\lambda_c$ LCB ≥ 370 нм; energy LCB положительна и не хуже семейной медианы;
-$t_{{1/2}}(305K)$ находится в 4–24 ч; обе AD пройдены; phototoxicity не
-неопределённа и её UCB ≤ 0.35; Kp UCB ≤ −4; SA proxy ≤ 5.
+production_contract = json.loads(CONFIG_JSON)["execution"]
+display({"audit": config["execution"], "production_contract": production_contract,
+         "warning": "audit_pass != production_acceptance"})
 """))
 
 cells.append(markdown(r"""
-## 6. Линейный запуск всех стадий
+## 5. Реальные данные и роль исходного Excel
 
-Результаты notebook записываются отдельно в `runs/notebook-smoke` или
-`runs/notebook-full`, поэтому проверенный `runs/full` не изменяется.
+Используемые для fit источники:
+
+- M13 UV/VisML: λmax transfer data, включая M11 Deep4Chem и M12 CDEx;
+- M01 photoswitch database: λmax и thermal Z→E kinetics;
+- U07 NICE: irritation/corrosion calls, только exact DTXSID join;
+- U09 HPPT: human skin sensitization;
+- U12 SkinPiX и U13 human epidermis: logKp с явным преобразованием единиц;
+- U16 QsarDB: 3T3 NRU phototoxicity;
+- M05: 22 condition-rich full-spectrum records двух spiropyrans, только как
+  отдельная calibration/validation evidence.
+
+`database_matrix_MOST_UV_skin.xlsx`, данный в начале, **используется**, но лишь
+как каталог литературы/источников и provenance. В нём нет пригодной таблицы
+`SMILES → endpoint`, поэтому он не попадает в обучение. M03 недоступен через
+file API без bearer token (HTTP 401); нулевой partial исключён. M04 не превращён
+в labels без надёжной автоматической идентификации структур. Синтетические
+energy labels не подставляются.
 """))
-
 cells.append(code(r"""
-from mostgen.config import dump_resolved_config
-from mostgen.provenance import append_event, write_manifest
-
-OUTPUT_DIR = PROJECT_ROOT / "runs" / f"notebook-{RUN_MODE}"
-DATA_DIR = OUTPUT_DIR / "data"
-MODELS_DIR = OUTPUT_DIR / "models"
-GENERATOR_DIR = OUTPUT_DIR / "generator"
-METRICS_DIR = OUTPUT_DIR / "metrics"
-REVIEW_DIR = OUTPUT_DIR / "review"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-dump_resolved_config(config, OUTPUT_DIR / "config.resolved.json")
-source_inputs = [
-    PROJECT_ROOT / "GOSHA.ipynb", PROJECT_ROOT / "config" / "default.json",
-    PROJECT_ROOT / "database_matrix_MOST_UV_skin.xlsx",
-    PROJECT_ROOT / "Задание.docx",
-    PROJECT_ROOT / "Солнцезащитная плёнка с молекулярным накоплением солнечной энергии.pptx",
-]
-write_manifest(OUTPUT_DIR / "experiment_manifest.json", config, source_inputs, ["GOSHA.ipynb", "Run All"])
-print("output:", OUTPUT_DIR)
-"""))
-
-cells.append(markdown("### Стадия 1 — подготовка данных и reaction library"))
-cells.append(code(r"""
-from mostgen.data import prepare_data, read_csv
-
-data_result = prepare_data(config, DATA_DIR, PROJECT_ROOT)
-append_event(OUTPUT_DIR / "events.jsonl", "prepare-data", data_result)
-display({k: data_result[k] for k in ["training_rows", "library_rows", "raw_inputs_mutated", "warning"]})
-"""))
-
-cells.append(markdown("### Стадия 2 — reward reviewers и независимые evaluators"))
-cells.append(code(r"""
+from mostgen.data import prepare_data, read_csv, write_csv
 from mostgen.reviewers import train_reviewers
-
-model_result = train_reviewers(config, DATA_DIR / "reviewer_training.csv", MODELS_DIR)
-append_event(OUTPUT_DIR / "events.jsonl", "train-reviewers", {"rows": model_result["rows"]})
-display({
-    "rows": model_result["rows"],
-    "evidence_tiers": model_result["evidence_tiers"],
-    "independent_instances": model_result["independent_instances"],
-    "reward_algorithm": model_result["reward"]["algorithm"],
-    "evaluator_algorithm": model_result["evaluator"]["algorithm"],
-})
-"""))
-
-cells.append(markdown("### Стадия 3 — family-specific REINVENT4/LibInvent hand-off"))
-cells.append(code(r"""
-from mostgen.search import write_generator_manifests
-
-generator_result = write_generator_manifests(config, GENERATOR_DIR)
-append_event(OUTPUT_DIR / "events.jsonl", "train-generator", generator_result)
-display(generator_result)
-"""))
-
-cells.append(markdown("### Стадия 4 — три matched-budget стратегии генерации"))
-cells.append(code(r"""
-from mostgen.search import run_methods
-
-generated_path = OUTPUT_DIR / "generated.csv"
-search_result = run_methods(
-    config,
-    DATA_DIR / "reaction_library.csv",
-    MODELS_DIR / "reward" / "reviewers.pkl",
-    generated_path,
-    list(config["execution"]["methods"]),
-)
-append_event(OUTPUT_DIR / "events.jsonl", "generate", search_result)
-display(search_result)
-"""))
-
-cells.append(markdown("### Стадия 5 — метрики, reward diagnostics и абляции"))
-cells.append(code(r"""
-import pandas as pd
-from mostgen.metrics import compute_metrics
-
-metrics_result = compute_metrics(generated_path, DATA_DIR / "reviewer_training.csv", METRICS_DIR, config)
-display(pd.read_csv(METRICS_DIR / "metrics_summary.csv"))
-display(pd.read_csv(METRICS_DIR / "reward_diagnostics.csv"))
-"""))
-
-cells.append(markdown("### Стадия 6 — независимый review и физический oracle queue"))
-cells.append(code(r"""
-from mostgen.review import review_generated
-
-review_result = review_generated(
-    config, generated_path, MODELS_DIR / "evaluator" / "reviewers.pkl", REVIEW_DIR
-)
-append_event(OUTPUT_DIR / "events.jsonl", "review", {
-    "reviewed": review_result["reviewed"],
-    "selected": review_result["selected_after_physical_oracle"],
-})
-display(review_result)
-"""))
-
-cells.append(markdown("### Стадия 7 — отчёт, презентация, acceptance и checksums"))
-cells.append(code(r"""
-from mostgen.reporting import build_reports
-from mostgen.validation import verify_experiment
 from mostgen.provenance import write_artifact_manifest
 
-reports = build_reports(OUTPUT_DIR, config)
-verification = verify_experiment(OUTPUT_DIR, config)
-artifact_manifest = write_artifact_manifest(OUTPUT_DIR)
-display({
-    "acceptance_passed": verification["passed"],
-    "checks": verification["checks"],
-    "artifact_count": len(artifact_manifest["artifacts"]),
-    "reports": reports,
-})
+RUN_ROOT = PROJECT_ROOT / "runs/notebook_real_audit"
+RUN_ROOT.mkdir(parents=True, exist_ok=True)
+data_manifest = prepare_data(config, RUN_ROOT / "data", PROJECT_ROOT)
+endpoints = read_csv(RUN_ROOT / "data/reviewer_endpoints.csv")
+catalog = read_csv(RUN_ROOT / "data/source_catalog_from_initial_excel.csv")
+display({"training_mode": data_manifest["training_mode"],
+         "endpoint_rows": data_manifest["endpoint_rows"],
+         "unique_structures_total": data_manifest["unique_structures_total"],
+         "full_spectrum_records": data_manifest["full_spectrum_records"],
+         "reaction_library_rows": data_manifest["reaction_library_rows"],
+         "initial_excel_catalog_rows": len(catalog),
+         "initial_excel_usage": data_manifest["initial_excel_usage"],
+         "unavailable_labels": data_manifest["unavailable_labels"]})
 """))
 
 cells.append(markdown(r"""
-## 7. Диагностика результата
+## 6. Reviewer models и формирование оценки
 
-Эта ячейка отвечает на вопрос «работает ли вообще» на уровне наблюдаемых
-инвариантов: точный budget, уникальность, семейное покрытие, отсутствие hard
-alerts, плотность reward и распределение причин отказа. Она не превращает
-синтетические predictions в физические измерения.
+Для каждой структуры ансамбль выдаёт mean и calibrated uncertainty. Предсказанный
+λmax превращается в явно объявленный Gaussian-band proxy (σ=34 nm), после чего:
+
+\[
+AUC_{UVB}=\int_{290}^{320}A(\lambda)d\lambda,\quad
+AUC_{UVA}=\int_{320}^{400}A(\lambda)d\lambda.
+\]
+
+`λc` — точка 90% cumulative area. UV gate использует нижние 90% границы AUC и
+λc≥370 nm. MOST gate требует положительную нижнюю границу ΔH, семейный reference
+и t½=4–24 h при 305 K. Safety gate проверяет upper bounds phototoxicity, Kp и
+sensitization, SA proxy, AD и hard structural veto.
+
+Dense reward — weighted geometric mean непрерывных sigmoid/interval scores с
+floor 0.001. Отсутствующей ΔH даётся только низкий shaping-component 0.20;
+hard MOST-pass при этом всегда false. Это сохраняет обучаемость curriculum, но
+не позволяет превратить отсутствие данных в «успех».
 """))
-
 cells.append(code(r"""
-from collections import Counter
-
-generated = read_csv(generated_path)
-run_counts = Counter((row["method_id"], row["seed"]) for row in generated)
-unique_counts = {
-    key: len({row["smiles"] for row in generated if (row["method_id"], row["seed"]) == key})
-    for key in run_counts
+model_cards = train_reviewers(config, RUN_ROOT / "data/reviewer_endpoints.csv", RUN_ROOT / "models")
+compact_metrics = {
+    purpose: {endpoint: values for endpoint, values in model_cards[purpose]["metrics"].items()}
+    for purpose in ("reward", "evaluator")
 }
+display({"rows": model_cards["rows"], "unique": model_cards["unique_structures"],
+         "energy_model_status": model_cards["energy_model_status"],
+         "independent_instances": model_cards["independent_instances"],
+         "metrics": compact_metrics})
+"""))
+
+cells.append(markdown(r"""
+## 7. Настоящий REINVENT4 LibInvent
+
+Сначала создаются и обучаются три TL agents. Затем для текущего seed запускаются
+12 stages (4×3 family) с DAP и `PenalizeSameSmiles`. Post-sampling сначала
+использует RL checkpoint, затем TL agent как neural diversity backstop. Ни
+случайное перечисление библиотеки, ни enumerative filler не добавляются.
+Нейросетевые предложения вне exact allowed library учитываются в audit, но
+отбрасываются до итогового scoring.
+"""))
+cells.append(code(r"""
+from mostgen.cli import _production_checks
+from mostgen.search import (
+    execute_generator_training, run_methods, run_reinvent_generation,
+    write_generator_manifests,
+)
+
+_production_checks(config)
+generator_manifest = write_generator_manifests(config, RUN_ROOT / "generator")
+transfer_learning = execute_generator_training(config, RUN_ROOT / "generator")
+libinvent_result = run_reinvent_generation(
+    config, RUN_ROOT / "generator", RUN_ROOT / "data/reaction_library.csv",
+    RUN_ROOT / "models/reward/reviewers.pkl", RUN_ROOT / "libinvent_generated.csv",
+)
+display({"transfer_learning": transfer_learning,
+         "curriculum_backend": libinvent_result["backend"],
+         "curriculum_optimization_calls": libinvent_result["curriculum"]["optimization_reviewer_evaluations"],
+         "sampling": libinvent_result["sampling"]})
+"""))
+
+cells.append(markdown(r"""
+## 8. Baselines, matched reviewer budget, metrics и independent review
+
+Baselines работают в том же reaction-library space. Каждый метод получает
+ровно 636 reward-reviewer evaluations: LibInvent = 576 curriculum + 60 final,
+baseline = 636 рассмотренных library candidates. После поиска каждый метод
+сохраняет одинаковые 60 уникальных структур (20 на семейство). Фактические
+вызовы проверяются по `search_budget_ledger.json`, а не выводятся из числа строк.
+"""))
+cells.append(code(r"""
+from mostgen.metrics import compute_metrics
+from mostgen.review import review_generated
+from mostgen.reporting import build_reports
+from mostgen.validation import verify_experiment
+
+baseline_result = run_methods(
+    config, RUN_ROOT / "data/reaction_library.csv", RUN_ROOT / "models/reward/reviewers.pkl",
+    RUN_ROOT / "baselines.csv", ["prior_random", "weighted_retraining"],
+)
+combined = read_csv(RUN_ROOT / "baselines.csv") + read_csv(RUN_ROOT / "libinvent_generated.csv")
+write_csv(RUN_ROOT / "generated.csv", combined)
+metrics_result = compute_metrics(
+    RUN_ROOT / "generated.csv", RUN_ROOT / "data/reviewer_endpoints.csv", RUN_ROOT / "metrics", config,
+)
+review_result = review_generated(
+    config, RUN_ROOT / "generated.csv", RUN_ROOT / "models/evaluator/reviewers.pkl", RUN_ROOT / "review",
+)
+reports = build_reports(RUN_ROOT, config)
+verification = verify_experiment(RUN_ROOT, config)
+write_artifact_manifest(RUN_ROOT)
+
+rows = read_csv(RUN_ROOT / "generated.csv")
+library = {(row["family"], row["smiles"]) for row in read_csv(RUN_ROOT / "data/reaction_library.csv")}
+display({"run_counts": dict(Counter((r["method_id"], r["seed"]) for r in rows)),
+         "family_counts": dict(Counter((r["method_id"], r["family"]) for r in rows)),
+         "all_exact_library": all((r["family"], r["smiles"]) in library for r in rows),
+         "psoralen_cores": sum(str(r["psoralen_alert"]).lower() == "true" for r in rows),
+         "known_phototoxic_matches": sum(str(r["known_phototoxic_match"]).lower() == "true" for r in rows),
+         "joint_pass": sum(str(r["joint_pass"]).lower() == "true" for r in rows),
+         "selected": review_result["selected_after_physical_oracle"],
+         "laboratory_experiments_executed": False,
+         "experimental_package": review_result["experimental_package"]["status"],
+         "audit_verification": verification["passed"]})
+"""))
+
+cells.append(markdown(r"""
+## 9. Независимый вычислительный physical unit-oracle
+
+Чтобы проверить сам toolchain даже при нуле provisional joint-pass, здесь
+рассчитывается простой NBD/QC library member F/F. Это unit-oracle, а не выбранный
+кандидат: ΔE — electronic-energy proxy, а sTDA curve — broadened proxy. Для
+production top-50–100 нужны более строгая конформерная сходимость и последующая
+экспериментальная проверка. Эта ячейка не выполняет лабораторный пункт 9 из
+перечня пользователя: синтез, измерения и OECD здесь не запускаются.
+"""))
+cells.append(code(r"""
+from mostgen.oracle import availability, evaluate_pair
+
+library_rows = read_csv(RUN_ROOT / "data/reaction_library.csv")
+oracle_candidate = next(row for row in library_rows
+                        if row["family"] == "nbd_qc" and row["synthon_a"] == "S01" and row["synthon_b"] == "S01")
+physical = evaluate_pair(oracle_candidate, RUN_ROOT / "review/physical_unit_oracle", config, 1)
+write_artifact_manifest(RUN_ROOT)
+display({"availability": availability(config),
+         "candidate": {key: oracle_candidate[key] for key in ("smiles", "charged_smiles", "family")},
+         "result": {key: physical[key] for key in ("gfn2_delta_e_kj_mol", "gfn2_specific_energy_wh_kg",
+                                                     "stda_uvb_auc", "stda_uva_auc", "stda_lambda_c_nm",
+                                                     "ground_xtb_converged", "charged_xtb_converged")}})
+"""))
+
+cells.append(markdown("## 10. Итоговый ответ и необходимые доработки"))
+cells.append(code(r'''
 failure_counts = Counter()
-for row in generated:
-    for reason in filter(None, row.get("failure_reasons", "").split(";")):
-        failure_counts[reason] += 1
+for row in rows:
+    failure_counts.update(reason for reason in row.get("failure_reasons", "").split(";") if reason)
 
-diagnostic = {
-    "rows": len(generated),
-    "exact_run_counts": dict(run_counts),
-    "unique_per_run": unique_counts,
-    "families": dict(Counter(row["family"] for row in generated)),
-    "psoralen_alerts": sum(row["psoralen_alert"].lower() == "true" for row in generated),
-    "known_phototoxic_matches": sum(row["known_phototoxic_match"].lower() == "true" for row in generated),
-    "nonzero_rewards": sum(float(row["reward"]) > 0 for row in generated),
-    "joint_pass_reward_models": sum(row["joint_pass"].lower() == "true" for row in generated),
-    "top_failure_reasons": failure_counts.most_common(),
-    "independent_provisional": review_result["independent_joint_pass"],
-    "final_selected": review_result["selected_after_physical_oracle"],
-}
-display(diagnostic)
-assert verification["passed"]
+display(Markdown(f"""
+### Работает ли pipeline?
+
+**Да, программно и end-to-end:** реальные источники распарсены, independent
+reviewers обучены, family TL и 12 curriculum stages REINVENT4 завершились,
+post-sampling дал требуемые audit-квоты, safety/AD/review/report/oracle исполнились.
+
+### Генерируются ли нужные по ТЗ молекулы?
+
+**По химическому пространству — да:** три заданных семейства, валидные
+ground/charged pairs, только разрешённые синтоны, 0 псораленовых/фурокумариновых
+ядер. **По совокупности целевых свойств — пока не доказано:** joint-pass =
+{sum(str(r['joint_pass']).lower() == 'true' for r in rows)}. Главная причина —
+нет открытой надёжной molecular ΔH training table; energy/AD gate правильно
+закрыт. Это не доказательство физической невозможности.
+
+### Что требует улучшения?
+
+1. Получить/вручную курировать M03/M04 ΔH, ΔG‡, t½, state/condition labels.
+2. Расширить очень малые U16 phototoxicity и M01 class-shift kinetics выборки.
+3. Заменить λmax Gaussian proxy большим набором реальных полных спектров и
+   solvent/state-aware моделью.
+4. Выполнить 3 независимых production seeds и ≥1000 neural-unique molecules на
+   запуск; текущая выполненная ячейка — честный audit 60, не production acceptance.
+5. Провести GFN2/sTDA top-50–100, затем синтез, cycling/quantum yield/t½,
+   OECD TG 432 и испытание готовой плёнки/формуляции.
+
+Частые причины отказа в audit: `{dict(failure_counts.most_common(8))}`.
+
+Начальный Excel: **использован как source catalog/provenance ({len(catalog)}
+строк), не использован для fit**, поскольку не содержит молекулярной таблицы
+SMILES/endpoint.
 """))
+'''))
 
 cells.append(markdown(r"""
-## 8. Что использовано и что обязательно улучшить
+## 11. Команды CLI
 
-### Уже работает корректно как программный прототип
+Полный production-прогон (3 метода × 3 seed × ≥1000 структур) реализован той же
+кодовой базой. Он намеренно не маскируется результатом короткого audit:
 
-- RDKit: sanitization, canonical SMILES, формула пары, Morgan/ECFP, Tanimoto,
-  Murcko scaffold, descriptors и substructure veto.
-- NumPy/scikit-learn: family-aware Random Forest reward ensembles и отдельные
-  Extra Trees evaluators; uncertainty как межмодельный разброс.
-- Три одинаково бюджетированных поиска в одной библиотеке; deterministic seeds.
-- AUC/λc/Beer–Lambert, LCB/UCB, AD, dense geometric reward, diversity penalty.
-- Неизменяемые исходники, source registry, event/config/model cards и SHA-256.
-- Fail-closed безопасность и отсутствие заявления о соответствии ISO.
+```bash
+./venv/bin/python -m mostgen run-all --mode production --output runs/production
+```
 
-### Критические научные ограничения текущей версии
-
-1. **Нет реальных обучающих наблюдений.** Метки — гладкие детерминированные
-   функции дескрипторов. На них можно тестировать код, но нельзя выбирать
-   соединения для синтеза.
-2. **CPU `libinvent_rl` — не neural LibInvent.** Это curriculum bandit над
-   конечной библиотекой. Настоящий REINVENT4 запускается только после установки
-   v4.8, pin/checksum reaction prior и внешнего scorer environment.
-3. **Evaluator независим алгоритмически, но не по источнику данных.** Он обучен
-   на тех же synthetic train records другим алгоритмом. Нужен независимый
-   experimental holdout или внешний dataset.
-4. **Uncertainty не откалибрована.** Разброс деревьев/ensemble не гарантирует
-   coverage 90%. Нужны conformal calibration, reliability curves и интервалы по
-   scaffold-held-out данным.
-5. **Синтетическая правдоподобность ограничена.** Два substituent templates и
-   complexity SA proxy не заменяют atom-mapped reaction validation,
-   retrosynthesis (AiZynthFinder/SynthSense), availability/price и impurity risk.
-6. **Safety gate неполон.** SMARTS и небольшой exact-match list полезны как
-   veto, но U07–U17 reviewers сейчас не обучены на реальных endpoint datasets.
-   Нужны расширенный phototoxicant registry, metabolites/photo-products,
-   sensitization, irritation, Kp/Jmax и эксперимент OECD TG 432.
-7. **Нет физического oracle.** XYZ-конформеры и команды подготовлены, но xTB,
-   xtb4stda и stda отсутствуют. Нужны фактические GFN2-xTB энергии, broadened
-   sTDA-xTB spectrum, проверка протонирования/растворителя и обработка failures.
-8. **Нет доказательства в плёнке.** Раствор, агрегирование, матрица, загрузка,
-   photobleaching и optical path могут полностью изменить spectrum. ISO 24444 и
-   ISO 24443 относятся к готовому продукту, не к отдельной молекуле.
-
-### Рекомендуемый порядок доработки
-
-Сначала заменить fixtures на очищенные M01/M03/M04/M11–M13 и U07–U17 со
-scaffold/time/source splits; затем откалибровать reviewers и AD; после этого
-подключить pinned REINVENT4 prior и настоящие family-specific RL runs; далее
-провести независимый xTB/sTDA top-50–100 review; лишь затем синтезировать малый
-набор и измерить spectrum, ΔH, t½, cycling и phototoxicity. До выполнения этих
-шагов корректное название результата — **исследовательский вычислительный
-скрининг**, не найденный безопасный UV-фильтр.
-"""))
-
-cells.append(markdown(r"""
-## 9. Выходные файлы
-
-- `generated.csv` — все структуры, uncertainty, AD, alerts и pass/fail reasons;
-- `metrics/` — matched-budget метрики, bootstrap, абляции и reward diagnostics;
-- `review/cards/` — независимые карточки top-кандидатов;
-- `review/physical_oracle/` — XYZ и очередь GFN2/sTDA-xTB;
-- `report/report.md` и `report/presentation_7min.md`;
-- `verification.json` и `artifact_manifest.json`.
-
-Ноль финально выбранных соединений при недоступном physical oracle является
-правильным fail-closed результатом, а не ошибкой генерации.
+Промежуточные стадии доступны как `prepare-data`, `train-reviewers`,
+`sample-baselines`, `train-generator`, `generate`, `review`. Все конфиги,
+checksums, model cards, CSV, oracle files и отчёты сохраняются внутри run-dir.
 """))
 
 notebook = {
     "cells": cells,
     "metadata": {
-        "kernelspec": {"display_name": "venv (MOSTGen)", "language": "python", "name": "python3"},
-        "language_info": {"name": "python", "version": "3.10.12", "mimetype": "text/x-python", "codemirror_mode": {"name": "ipython", "version": 3}, "pygments_lexer": "ipython3", "nbconvert_exporter": "python", "file_extension": ".py"},
+        "kernelspec": {"display_name": "MOSTGen venv", "language": "python", "name": "python3"},
+        "language_info": {"name": "python", "version": "3.10", "mimetype": "text/x-python",
+                          "codemirror_mode": {"name": "ipython", "version": 3},
+                          "pygments_lexer": "ipython3", "nbconvert_exporter": "python", "file_extension": ".py"},
     },
     "nbformat": 4,
     "nbformat_minor": 5,

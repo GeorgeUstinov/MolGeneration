@@ -1,2 +1,13 @@
 /runs
 /venv
+/external
+/data
+/.uv-cache
+/.pytest_cache
+/.ipynb_checkpoints
+**/__pycache__/
+*.py[cod]
+
+# Locally generated REINVENT sampling hand-off files contain absolute paths.
+/config/libinvent_scaffolds_smoke.smi
+/config/reinvent_sample_*.toml

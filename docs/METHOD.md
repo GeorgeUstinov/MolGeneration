@@ -1,101 +1,65 @@
-# Implementation and scientific contract
+# Метод и научный контракт MolGenerate
 
-## What is implemented
+## Данные
 
-The package exposes one CLI with `prepare-data`, `train-reviewers`,
-`sample-baselines`, `train-generator`, `generate`, `review`, and `run-all`.
-Every output directory contains the resolved configuration, package and Python
-versions, source registry, local input SHA-256 values, seeds, budget, an event
-log, model cards, generated structures, metrics, review cards, and reports.
+`full/production` формируют `reviewer_endpoints.csv` из фактически локальных
+M13 (λmax; включает M11 Deep4Chem и M12 CDEx), M01 (photoswitch λmax и thermal
+kinetics), U07 (irritation/corrosion exact-DTXSID join), U09 (human patch-test
+sensitization), U12 SkinPiX и U13 human epidermis (logKp), U16 QsarDB (3T3 NRU).
+M05 full spectra двух spiropyrans сохраняются отдельно как малая проверка.
+Каждая строка имеет endpoint, molecule/state/condition semantics, source и
+exact-Murcko split. Исходный Excel превращается только в source catalog.
 
-The family definitions in `config/default.json` contain fixed ground/charged
-templates, reaction SMARTS, allowed attachment positions, and a versioned
-synthon library.  `build_pair` canonicalizes both products with RDKit and
-requires equal molecular formulae.  Enumeration is deduplicated by canonical
-family/SMILES identity.
+M03 file API требует bearer token; нулевой partial исключён. M04 сохранён, но
+не превращён в labels без надёжной связи спектров и структур.
+U08/U10/U11/U14/U17 пока не дают нормализованной доступной таблицы
+`SMILES → endpoint`. Литературные M08–M10 не объявляются bulk datasets.
 
-Search methods share the same enumerated chemical space and exact reviewer
-call budget:
+## Reviewers
 
-1. `prior_random` samples without replacement;
-2. `weighted_retraining` updates synthon weights from observed scores;
-3. `libinvent_rl` uses chemistry → spectrum → MOST → safety curriculum stages,
-   exploration, a dense geometric reward, and ECFP cluster penalties.
+Reward = ensembles Random Forest, evaluator = независимые Extra Trees.
+Validation residuals калибруют 90% split-conformal uncertainty; test scaffold
+не участвует в fit/calibration. λmax переводится в объявленный Gaussian-band
+proxy σ=34 nm. Kinetics M01 является class-shift evidence для MOST families.
+Из-за отсутствия molecular ΔH labels energy и MOST AD не предсказываются.
 
-The third method is a CPU-testable policy surrogate.  It does **not** claim to
-be a trained REINVENT network.  `train-generator` exports one pinned-input
-manifest per family for the real REINVENT4/LibInvent hand-off.  Production mode
-fails unless the REINVENT revision, executable, and reaction prior are present.
+## Generator
 
-## Data and model separation
+REINVENT4 v4.8.24 закреплён commit
+`80a8d21aefd9c0d3ec806377522effb30cfca12a`. Официальный `libinvent.prior`
+имеет SHA-256
+`03e6cbe8a53e59a4ac3aa6728d041f1957bdd07b5eefdf2cfc5c8591036075af`.
+Для каждого family создаётся TL agent, для каждого family×seed — staged-learning
+TOML. Curriculum: chemistry → spectrum → MOST → safety; DAP и
+`PenalizeSameSmiles`. ExternalProcess принимает score только для exact product
+из versioned synthon library. После RL checkpoint сэмплируется нейросеть; TL
+agent служит neural diversity backstop. Enumerative filler запрещён.
 
-`prepare-data` never changes the original XLSX, DOCX, or PPTX.  It records their
-SHA-256 digests and writes derivatives under the experiment directory.  The
-built-in labels are deterministic fixtures marked `synthetic_smoke_only`.
-Production mode refuses that evidence tier.
+Сравнение использует равный полный reward-reviewer budget. В production это
+1576 evaluations на method×seed: для LibInvent 576 curriculum calls + 1000
+финальных scoring calls; baselines оценивают 1576 уникальных library candidates
+и сохраняют те же 1000 family-balanced результатов. Audit использует
+соответственно 636 = 576 + 60. Фактические числа проверяются по
+`search_budget_ledger.json`.
 
-Murcko scaffold groups, not rows, determine train/validation/test assignments.
-The loader rejects scaffold overlap.  Reward reviewers are Random Forest
-ensembles; independent evaluators are separate Extra Trees ensembles.  Spectrum
-is predicted on a 5 nm grid from 290 to 400 nm.  MOST models are fit separately
-for NBD/QC, Dewar-pyrimidinone, and spiropyran.  Applicability domains are
-nearest-reference Morgan similarity and are reported separately for spectrum
-and family-specific MOST.
+## Score и pass
 
-M08–M10 are not represented as downloadable training corpora.  The source
-registry treats literature-only resources as orientation, never bulk data.
-M01/M03/M04, M11–M13, and U07–U17 require licensed or open local records with
-validated endpoints before a production run.
+UVB/UVA AUC, λc и worst-side Beer–Lambert transmittance вычисляются из proxy.
+UV-pass требует обе AUC LCB не хуже reference, λc LCB ≥370 nm и conditional
+film-proxy UCB transmittance не выше конфигурируемых порогов. MOST-pass требует
+положительную ΔH LCB, family reference, specific-energy LCB ≥50 Wh/kg и t½
+4–24 h. Safety учитывает phototoxicity/Kp/sensitization upper bounds, SA, AD и
+hard alerts. Dense reward — weighted geometric mean sigmoid/interval components
+с floor; missing energy получает только shaping score 0.20 и никогда не проходит
+hard gate.
 
-## Pass rules
+## Physical oracle и эксперимент
 
-The spectral curve produces trapezoidal UVB AUC (290–320), UVA AUC (320–400),
-the wavelength containing 90% of cumulative 290–400 AUC, and conditional
-Beer–Lambert transmittance.  UV-pass requires both AUC lower confidence bounds
-to meet the family reference medians and λc lower bound ≥370 nm.
+RDKit ETKDG retry/random-coordinates + MMFF/UFF pre-relaxation предшествуют
+GFN2-xTB оптимизации обоих состояний. ΔE и Wh/kg — внешние electronic proxies.
+xtb4stda/sTDA transitions уширяются на 290–400 nm. Oracle не входит в RL.
 
-MOST-pass requires positive energy LCB, energy LCB at least the family median,
-and predicted half-life at 305 K between 4 and 24 hours.  Both applicability
-domains must pass.  Results outside an AD do not pass regardless of mean.
-
-The reward is a weighted geometric mean with a nonzero floor.  Continuous
-sigmoid and interval components cover UVB, UVA, λc, energy, half-life,
-phototoxicity, permeation, SA, and AD.  `reward_diagnostics.csv` records
-nonzero fraction, effective sample size, cluster concentration, and component
-means.
-
-## Safety and claim boundaries
-
-Safety vetoes run before reviewer scoring.  RDKit SMARTS catch configured
-linear/angular furocoumarin cores, known phototoxic structures, reactive groups,
-unsupported elements, invalid valence, and pair failure.  An uncertain
-phototoxicity prediction cannot enter a shortlist.  Absence of an alert does
-not establish safety.
-
-Independent review writes a structured card per candidate.  The physical
-oracle queue contains separately embedded and force-field-minimized ground and
-charged XYZ structures and explicit GFN2-xTB/sTDA-xTB commands.  Missing tools
-produce `not_run_external_tools_unavailable`; no deterministic surrogate is
-silently substituted.  Consequently final `selected=true` is fail-closed until
-the external oracle result is imported and complete.
-
-Candidates are research hypotheses, not cosmetic ingredients. ISO 24444:2019
-and ISO 24443:2021 concern finished products. Film/formulation testing and an
-experimental phototoxicity method such as OECD TG 432 remain required.
-
-## Production data adapter contract
-
-A replacement `reviewer_training.csv` must keep these columns:
-
-- identity/provenance: `candidate_id`, `smiles`, `charged_smiles`, `family`,
-  `source_id`, `source_kind`, `evidence_tier`;
-- split semantics: `scaffold`, `split`, `state`, `temperature_k`, `medium`,
-  `label_level`;
-- endpoints: `abs_290` … `abs_400`, `energy_kj_mol`,
-  `specific_energy_wh_kg`, `log_half_life_h`, `kp_log_cm_s`, and
-  `phototoxicity_probability`.
-
-Rows must distinguish molecule-, state-, condition-, and film-level labels.
-Do not copy a formulation endpoint onto a molecule. Units must be normalized
-before training, while original units and values remain in immutable raw data.
-
+Физический лабораторный пункт не выполняется кодом. Программа лишь создаёт
+пустые схемы и валидирует возвращённые лабораторией identity, solution spectra,
+photokinetics, calorimetry, cycling, film spectra и OECD TG 432 data. См.
+`docs/EXPERIMENTAL_VALIDATION.md`.

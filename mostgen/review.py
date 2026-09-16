@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .data import read_csv, write_csv
+from .experimental import write_experimental_package
 from .oracle import prepare_oracle_queue
 from .reviewers import ReviewerBundle
 from .scoring import ScoringContext
@@ -52,9 +53,18 @@ def _card(row: dict[str, Any], oracle_status: str) -> dict[str, Any]:
                 "uvb_auc": row.get("uvb_auc_uncertainty"), "uva_auc": row.get("uva_auc_uncertainty"),
                 "lambda_c": row.get("lambda_c_uncertainty"),
             },
+            "conditional_film_proxy": {
+                "loading_scale": row.get("beer_lambert_loading_scale"),
+                "uvb_transmittance": row.get("uvb_transmittance"),
+                "uvb_transmittance_ucb": row.get("uvb_transmittance_ucb"),
+                "uva_transmittance": row.get("uva_transmittance"),
+                "uva_transmittance_ucb": row.get("uva_transmittance_ucb"),
+                "pass": row.get("film_proxy_pass"),
+            },
         },
         "most": {
             "delta_h_kj_mol": row.get("energy_kj_mol"), "specific_energy_wh_kg": row.get("specific_energy_wh_kg"),
+            "specific_energy_lcb_wh_kg": row.get("specific_energy_lcb"),
             "half_life_h_at_305k": row.get("half_life_h"), "uncertainty": {
                 "delta_h": row.get("energy_uncertainty"), "specific_energy": row.get("specific_energy_uncertainty"),
                 "log_half_life": row.get("half_life_uncertainty_log"),
@@ -65,6 +75,8 @@ def _card(row: dict[str, Any], oracle_status: str) -> dict[str, Any]:
             "phototoxicity_uncertain": row.get("phototoxicity_uncertain"), "psoralen_alert": row.get("psoralen_alert"),
             "known_phototoxic_match": row.get("known_phototoxic_match"), "reactive_alerts": row.get("reactive_alerts"),
             "sa_score_proxy": row.get("sa_score"),
+            "sensitization_probability": row.get("sensitization_probability"),
+            "irritation_probability": row.get("irritation_probability"),
         },
         "applicability_domain": {
             "spectral_similarity_D_A": row.get("similarity_D_A"), "most_similarity_D_B": row.get("similarity_D_B"),
@@ -78,7 +90,8 @@ def _card(row: dict[str, Any], oracle_status: str) -> dict[str, Any]:
         },
         "evidence": {
             "reviewer": "independent evaluator, separate from reward models",
-            "data_tier": "synthetic_smoke_only",
+            "data_tier": row.get("reviewer_data_mode", "synthetic_smoke_only"),
+            "endpoint_evidence": row.get("evidence_json", "{}"),
             "physical_oracle": oracle_status,
             "claim_level": "research screening candidate only",
             "not_iso_certified": True,
@@ -107,6 +120,19 @@ def review_generated(
     destination.mkdir(parents=True, exist_ok=True)
     oracle_manifest = prepare_oracle_queue(reviewed, destination / "physical_oracle", config)
     oracle_complete = oracle_manifest["status"] == "complete"
+    oracle_results_path = destination / "physical_oracle" / "oracle_results.csv"
+    oracle_by_id = {row["candidate_id"]: row for row in read_csv(oracle_results_path)} if oracle_results_path.exists() else {}
+    for row in reviewed:
+        physical = oracle_by_id.get(row.get("candidate_id"), {})
+        row.update(physical)
+        row["physical_oracle_pass"] = bool(
+            physical
+            and float(physical.get("gfn2_delta_e_kj_mol", 0.0)) > 0.0
+            and float(physical.get("gfn2_specific_energy_wh_kg", 0.0)) >= float(config["reviewers"].get("specific_energy_min_wh_kg", 0.0))
+            and float(physical.get("stda_lambda_c_nm", 0.0)) >= float(config["reviewers"]["lambda_c_min_nm"])
+            and float(physical.get("stda_uvb_transmittance", 1.0)) <= float(config["reviewers"].get("uvb_transmittance_max", 1.0))
+            and float(physical.get("stda_uva_transmittance", 1.0)) <= float(config["reviewers"].get("uva_transmittance_max", 1.0))
+        )
     provisional = [
         row for row in reviewed
         if _truth(row.get("joint_pass"))
@@ -114,7 +140,7 @@ def review_generated(
         and not _truth(row.get("psoralen_alert"))
         and not _truth(row.get("known_phototoxic_match"))
     ]
-    selected = provisional if oracle_complete else []
+    selected = [row for row in provisional if _truth(row.get("physical_oracle_pass"))] if oracle_complete else []
     selected_keys = {(row["smiles"], row["method_id"], str(row["seed"])) for row in selected}
     for row in reviewed:
         row["physical_oracle_status"] = oracle_manifest["status"]
@@ -128,6 +154,9 @@ def review_generated(
     write_csv(destination / "reviewed_top.csv", reviewed)
     write_csv(destination / "provisional_shortlist.csv", provisional, fieldnames=list(reviewed[0]) if reviewed else [])
     write_csv(destination / "shortlist.csv", selected, fieldnames=list(reviewed[0]) if reviewed else [])
+    experimental_package = write_experimental_package(
+        destination / "shortlist.csv", destination / "experimental_package",
+    )
     cards_dir = destination / "cards"
     cards_dir.mkdir(parents=True, exist_ok=True)
     for row in reviewed:
@@ -136,8 +165,8 @@ def review_generated(
     summary = {
         "reviewed": len(reviewed), "independent_joint_pass": len(provisional),
         "selected_after_physical_oracle": len(selected), "physical_oracle": oracle_manifest,
+        "experimental_package": experimental_package,
         "selection_policy": "Fail closed: no final selection until independent physical oracle results are complete.",
     }
     (destination / "review_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return summary
-

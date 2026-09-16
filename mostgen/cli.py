@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from .config import apply_override, dump_resolved_config, load_config
-from .data import prepare_data
+from .data import prepare_data, read_csv, write_csv
 from .metrics import compute_metrics
 from .oracle import availability
 from .provenance import append_event, sha256_file, write_artifact_manifest, write_manifest
 from .reporting import build_reports
 from .review import review_generated
 from .reviewers import train_reviewers
-from .search import run_methods, write_generator_manifests
+from .search import execute_generator_training, run_methods, run_reinvent_generation, write_generator_manifests
 from .validation import verify_experiment
 
 
@@ -56,13 +56,19 @@ def _production_checks(config: dict[str, Any]) -> None:
     if production["reinvent4_revision"].startswith("PIN_REQUIRED"):
         errors.append("REINVENT4 revision is not pinned")
     prior = Path(production["reaction_prior_path"]) if production["reaction_prior_path"] else None
+    if prior is not None and not prior.is_absolute():
+        prior = ROOT / prior
     if prior is None or not prior.is_file():
         errors.append("reaction prior path is not a file")
     elif not production.get("reaction_prior_sha256"):
         errors.append("reaction prior SHA-256 is not configured")
     elif sha256_file(prior) != production["reaction_prior_sha256"]:
         errors.append("reaction prior SHA-256 mismatch")
-    if shutil.which("reinvent") is None:
+    reinvent_value = production.get("reinvent_executable", "reinvent")
+    reinvent_path = Path(reinvent_value)
+    if not reinvent_path.is_absolute():
+        reinvent_path = ROOT / reinvent_path
+    if not (reinvent_path.is_file() or shutil.which(reinvent_value)):
         errors.append("REINVENT4 `reinvent` executable is unavailable")
     if production.get("require_physical_oracle") and not availability(config)["ready"]:
         errors.append("xTB/sTDA toolchain is unavailable")
@@ -81,8 +87,9 @@ def command_prepare(args: argparse.Namespace) -> dict[str, Any]:
 def command_train_reviewers(args: argparse.Namespace) -> dict[str, Any]:
     config, paths = _config(args), _layout(args.output)
     _initialize(config, paths)
-    _require(paths["data"] / "reviewer_training.csv", "prepare-data")
-    result = train_reviewers(config, paths["data"] / "reviewer_training.csv", paths["models"])
+    training = paths["data"] / ("reviewer_training.csv" if config["execution"]["mode"] == "smoke" else "reviewer_endpoints.csv")
+    _require(training, "prepare-data")
+    result = train_reviewers(config, training, paths["models"])
     append_event(paths["root"] / "events.jsonl", "train-reviewers", {"rows": result["rows"]})
     return result
 
@@ -93,6 +100,8 @@ def command_train_generator(args: argparse.Namespace) -> dict[str, Any]:
     if config["execution"]["mode"] == "production":
         _production_checks(config)
     result = write_generator_manifests(config, paths["generator"])
+    if config["execution"]["mode"] != "smoke":
+        result["training"] = execute_generator_training(config, paths["generator"])
     append_event(paths["root"] / "events.jsonl", "train-generator", result)
     return result
 
@@ -103,10 +112,19 @@ def command_search(args: argparse.Namespace, methods: list[str]) -> dict[str, An
     _require(paths["data"] / "reaction_library.csv", "prepare-data")
     _require(paths["models"] / "reward" / "reviewers.pkl", "train-reviewers")
     output_name = "generated.csv" if args.command in {"generate", "run-all"} else "baselines.csv"
-    result = run_methods(
-        config, paths["data"] / "reaction_library.csv", paths["models"] / "reward" / "reviewers.pkl",
-        paths["root"] / output_name, methods,
-    )
+    if methods == ["libinvent_rl"] and config["execution"]["mode"] != "smoke":
+        _production_checks(config)
+        for family in config["families"]:
+            _require(paths["generator"] / f"libinvent_{family}.agent", "train-generator")
+        result = run_reinvent_generation(
+            config, paths["generator"], paths["data"] / "reaction_library.csv",
+            paths["models"] / "reward" / "reviewers.pkl", paths["root"] / output_name,
+        )
+    else:
+        result = run_methods(
+            config, paths["data"] / "reaction_library.csv", paths["models"] / "reward" / "reviewers.pkl",
+            paths["root"] / output_name, methods,
+        )
     append_event(paths["root"] / "events.jsonl", args.command, result)
     return result
 
@@ -126,16 +144,40 @@ def command_run_all(args: argparse.Namespace) -> dict[str, Any]:
     _initialize(config, paths)
     data_result = prepare_data(config, paths["data"], ROOT)
     append_event(paths["root"] / "events.jsonl", "prepare-data", data_result)
-    model_result = train_reviewers(config, paths["data"] / "reviewer_training.csv", paths["models"])
+    training_path = paths["data"] / ("reviewer_training.csv" if config["execution"]["mode"] == "smoke" else "reviewer_endpoints.csv")
+    model_result = train_reviewers(config, training_path, paths["models"])
     append_event(paths["root"] / "events.jsonl", "train-reviewers", {"rows": model_result["rows"]})
-    generator_result = write_generator_manifests(config, paths["generator"])
-    if config["execution"]["mode"] == "production":
+    if config["execution"]["mode"] != "smoke":
         _production_checks(config)
-    search_result = run_methods(
-        config, paths["data"] / "reaction_library.csv", paths["models"] / "reward" / "reviewers.pkl",
-        paths["generated"], list(config["execution"]["methods"]),
-    )
-    metrics_result = compute_metrics(paths["generated"], paths["data"] / "reviewer_training.csv", paths["metrics"], config)
+    generator_result = write_generator_manifests(config, paths["generator"])
+    if config["execution"]["mode"] != "smoke":
+        generator_result["training"] = execute_generator_training(config, paths["generator"])
+    if config["execution"]["mode"] == "smoke":
+        search_result = run_methods(
+            config, paths["data"] / "reaction_library.csv", paths["models"] / "reward" / "reviewers.pkl",
+            paths["generated"], list(config["execution"]["methods"]),
+        )
+    else:
+        baseline_path = paths["root"] / "baselines.csv"
+        baseline_result = run_methods(
+            config, paths["data"] / "reaction_library.csv", paths["models"] / "reward" / "reviewers.pkl",
+            baseline_path, ["prior_random", "weighted_retraining"],
+        )
+        rl_path = paths["root"] / "libinvent_generated.csv"
+        rl_result = run_reinvent_generation(
+            config, paths["generator"], paths["data"] / "reaction_library.csv",
+            paths["models"] / "reward" / "reviewers.pkl", rl_path,
+        )
+        combined = read_csv(baseline_path) + read_csv(rl_path)
+        write_csv(paths["generated"], combined)
+        search_result = {
+            "path": str(paths["generated"]), "rows": len(combined),
+            "run_counts": {**baseline_result["run_counts"], **rl_result["run_counts"]},
+            "methods": list(config["execution"]["methods"]),
+            "seeds": list(config["execution"]["seeds"]),
+            "libinvent_backend": rl_result["backend"],
+        }
+    metrics_result = compute_metrics(paths["generated"], training_path, paths["metrics"], config)
     review_result = review_generated(config, paths["generated"], paths["models"] / "evaluator" / "reviewers.pkl", paths["review"])
     reports = build_reports(paths["root"], config)
     verification = verify_experiment(paths["root"], config)
@@ -162,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
         "train-reviewers": "train separate reward and evaluator ensembles",
         "sample-baselines": "run matched-budget prior and weighted baselines",
         "train-generator": "write family-specific REINVENT4/LibInvent manifests",
-        "generate": "run curriculum LibInvent surrogate generation",
+        "generate": "run real REINVENT4 LibInvent curriculum generation",
         "review": "independently review top candidates and queue physical oracle",
         "run-all": "execute the entire reproducible workflow",
     }
