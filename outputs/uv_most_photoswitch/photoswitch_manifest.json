@@ -1,0 +1,18 @@
+{
+  "purpose": "pair-aware de novo azo photoswitch candidate generation",
+  "scope_warning": "E/Z and lambda/half-life proxies only; PSS, quantum yield, DeltaH, stored energy and cycling require physical validation",
+  "run_seeds": [
+    1701,
+    1702,
+    1703
+  ],
+  "device": "cpu",
+  "M01_sha256": "4d18321fea3618acd4d7910f5e2a6e4da20640dfcfc43e939e60a96baf78ed09",
+  "base_joint_manifest": "/home/dokoo-lua/MolGeneration/outputs/uv_most_joint/run_manifest.json",
+  "generated_rows": 23151,
+  "proxy_pass_rows": 22248,
+  "artifacts": {
+    "generated": "/home/dokoo-lua/MolGeneration/generated_photoswitch.csv",
+    "audit": "/home/dokoo-lua/MolGeneration/outputs/uv_most_photoswitch/photoswitch_proposal_audit.csv"
+  }
+}

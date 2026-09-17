@@ -1,5 +1,6 @@
 /runs
 /venv
+/.uvgen_venv
 /external
 /data
 /.uv-cache
@@ -7,6 +8,12 @@
 /.ipynb_checkpoints
 **/__pycache__/
 *.py[cod]
+
+# Reproducible runtime artifacts that are too large or too transient for Git.
+/outputs/**/models/
+/outputs/**/*audit*.csv
+/outputs/**/dataset_*_curated.csv
+/outputs/**/prior_training_corpus.csv
 
 # Locally generated REINVENT sampling hand-off files contain absolute paths.
 /config/libinvent_scaffolds_smoke.smi

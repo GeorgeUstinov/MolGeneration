@@ -1,0 +1,44 @@
+{
+  "purpose": "one conditional SELFIES-GRU for azo and stilbene-like E/Z photoswitch candidates",
+  "generator": {
+    "architecture": "ConditionalGRU",
+    "single_checkpoint": "/home/dokoo-lua/MolGeneration/outputs/uv_most_multiclass/models/unified_conditional_agent.pt",
+    "family_tokens": {
+      "azo": "<AZO>",
+      "stilbene": "<STILBENE>"
+    }
+  },
+  "sources": {
+    "M01": "The Photoswitch Dataset",
+    "UVVisML": "pinned cached split files"
+  },
+  "families": [
+    {
+      "family": "azo",
+      "final_status": "FAIL_PROXY",
+      "rows": 3942
+    },
+    {
+      "family": "azo",
+      "final_status": "PASS_AZO_PROXY",
+      "rows": 852
+    },
+    {
+      "family": "stilbene",
+      "final_status": "FAIL_PROXY",
+      "rows": 4427
+    },
+    {
+      "family": "stilbene",
+      "final_status": "PASS_STILBENE_STRUCTURAL_PROXY",
+      "rows": 10405
+    }
+  ],
+  "scope_warning": "stilbene-like has structural E/Z and UV proxy only; PSS, quantum yield, half-life and stored energy are unavailable",
+  "missing_physical_endpoints": [
+    "PSS",
+    "quantum_yield",
+    "deltaH_kJ_mol",
+    "stored_energy_MJ_kg"
+  ]
+}

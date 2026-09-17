@@ -169,7 +169,7 @@
     "reactive_fragments": ["N=N=N", "OO", "C(Cl)(Cl)Cl", "[N-]=[N+]=N", "P(Cl)Cl", "S(Cl)(=O)=O"]
   },
   "sources": [
-    {"id": "M01", "role": "photoswitch calibration", "url": "LOCAL_OR_LICENSED_DATA_REQUIRED", "license": "verify_before_use"},
+    {"id": "M01", "role": "photoswitch calibration", "url": "https://github.com/Ryan-Rhys/The-Photoswitch-Dataset", "license": "MIT; pinned commit e30d68287d7803bc0199604e2693ef50b5ee6b3b"},
     {"id": "M03", "role": "MOST energy and spectrum validation", "url": "LOCAL_OR_LICENSED_DATA_REQUIRED", "license": "verify_before_use"},
     {"id": "M04", "role": "MOST state validation", "url": "LOCAL_OR_LICENSED_DATA_REQUIRED", "license": "verify_before_use"},
     {"id": "M08-M10", "role": "literature orientation only; no bulk training data claimed", "url": "BIBLIOGRAPHY_RESOLUTION_REQUIRED", "license": "metadata_only"},

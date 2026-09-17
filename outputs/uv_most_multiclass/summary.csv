@@ -1,0 +1,5 @@
+family,final_status,rows
+azo,FAIL_PROXY,3942
+azo,PASS_AZO_PROXY,852
+stilbene,FAIL_PROXY,4427
+stilbene,PASS_STILBENE_STRUCTURAL_PROXY,10405

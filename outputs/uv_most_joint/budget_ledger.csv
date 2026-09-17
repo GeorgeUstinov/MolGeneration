@@ -1,0 +1,10 @@
+method_id,seed,candidate_reward_evaluations,optimization_evaluations,final_evaluations
+A1_uv_only_rl,1701,5040,3840,1200
+A1_uv_only_rl,1702,5040,3840,1200
+A1_uv_only_rl,1703,5040,3840,1200
+B0_prior_random,1701,5040,3840,1200
+B0_prior_random,1702,5040,3840,1200
+B0_prior_random,1703,5040,3840,1200
+M1_joint_rl,1701,5040,3840,1200
+M1_joint_rl,1702,5040,3840,1200
+M1_joint_rl,1703,5040,3840,1200
