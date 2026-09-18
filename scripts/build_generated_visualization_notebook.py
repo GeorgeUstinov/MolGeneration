@@ -20,8 +20,9 @@ cells = [
         """
 # Визуализация единой multiclass photoswitch-модели
 
-Notebook читает `generated_multiclass_photoswitch.csv`, полученный одним
-conditional SELFIES-GRU с family-токенами `<AZO>` и `<STILBENE>`.
+Notebook читает свежий balanced top-1000 из
+`generated_multiclass_photoswitch.csv`, полученный одним conditional
+SELFIES-GRU с family-токенами `<AZO>` и `<STILBENE>`.
 
 Оба класса имеют явные E/Z-пары и общий UV proxy. Azo дополнительно имеет
 обучаемые half-life и E/Z spectral-separation proxies. Для stilbene-like
@@ -42,22 +43,28 @@ from rdkit.Chem import Draw
 RDLogger.DisableLog("rdApp.*")
 ROOT = Path.cwd().resolve()
 CSV_PATH = ROOT / "generated_multiclass_photoswitch.csv"
+METRICS_PATH = ROOT / "outputs" / "uv_most_multiclass" / "generation_metrics.csv"
 df = pd.read_csv(CSV_PATH)
 required = {
-    "family", "canonical_smiles", "state_A_smiles", "state_B_smiles",
+    "selection_rank", "candidate_id", "rank_within_family", "family",
+    "canonical_smiles", "state_A_smiles", "state_B_smiles",
     "pair_valid", "eval_uv_lambda_nm", "eval_uv_uncertainty_nm", "sa_score",
-    "reward", "PSS_pred", "quantum_yield_pred", "deltaH_kJ_mol",
+    "reward", "selection_score", "target_A_pass", "target_B_pass",
+    "joint_success", "PSS_pred", "quantum_yield_pred", "deltaH_kJ_mol",
     "stored_energy_MJ_kg", "final_status",
 }
 missing = required.difference(df.columns)
 if missing:
     raise KeyError(f"generated_multiclass_photoswitch.csv is missing: {sorted(missing)}")
+if len(df) != 1000 or df["canonical_smiles"].nunique() != 1000:
+    raise ValueError("Expected exactly 1000 globally unique fresh candidates")
 print(f"Loaded {len(df):,} rows from {CSV_PATH}")
 print("Families:", df["family"].value_counts().to_dict())
 print("Unique structures:", df.groupby("family")["canonical_smiles"].nunique().to_dict())
+print("Selection ranks:", (int(df["selection_rank"].min()), int(df["selection_rank"].max())))
         """
     ),
-    md("## Размеры классов и итоговые proxy-status"),
+    md("## Состав свежего top-1000 и ранжирование"),
     code(
         """
 summary = (
@@ -69,17 +76,30 @@ summary = (
           median_uv_nm=("eval_uv_lambda_nm", "median"),
           median_uv_uncertainty_nm=("eval_uv_uncertainty_nm", "median"),
           median_sa=("sa_score", "median"),
+          median_selection_score=("selection_score", "median"),
       )
 )
 display(summary)
 display(pd.crosstab(df["family"], df["final_status"]))
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-df["family"].value_counts().plot.bar(ax=axes[0], color=["tab:orange", "tab:blue"])
-axes[0].set(title="Generated valid pairs", xlabel="family", ylabel="rows")
-status_table = pd.crosstab(df["family"], df["final_status"])
-status_table.plot.bar(stacked=True, ax=axes[1])
-axes[1].set(title="Proxy status by family", xlabel="family", ylabel="rows")
+colors = {"azo": "tab:orange", "stilbene": "tab:blue"}
+fig, axes = plt.subplots(1, 3, figsize=(16, 4.2))
+df["family"].value_counts().reindex(["azo", "stilbene"]).plot.bar(
+    ax=axes[0], color=[colors["azo"], colors["stilbene"]]
+)
+axes[0].set(title="Balanced shortlist", xlabel="family", ylabel="candidates")
+for family, part in df.groupby("family"):
+    axes[1].hist(part["selection_score"], bins=28, alpha=0.6, color=colors[family], label=family)
+    axes[2].scatter(
+        part["rank_within_family"], part["selection_score"],
+        s=11, alpha=0.45, color=colors[family], label=family,
+    )
+axes[1].set(title="Evaluator/proxy score", xlabel="selection score", ylabel="count")
+axes[2].set(title="Score along family rank", xlabel="rank within family", ylabel="selection score")
+for axis in axes[1:]:
+    axis.legend()
+for axis in axes:
+    axis.grid(alpha=0.2)
 plt.tight_layout()
 plt.show()
         """
@@ -111,13 +131,13 @@ azo = df[df["family"].eq("azo")].dropna(subset=["pred_delta_lambda_nm", "eval_ha
 fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
 scatter = axes[0].scatter(
     azo["pred_delta_lambda_nm"], azo["eval_half_life_h"],
-    c=azo["reward"], cmap="viridis", s=12, alpha=0.45,
+    c=azo["selection_score"], cmap="viridis", s=16, alpha=0.5,
 )
 axes[0].axvline(20, color="black", ls="--")
 axes[0].axhspan(4, 24, color="tab:orange", alpha=0.1)
 axes[0].set_yscale("log")
 axes[0].set(xlabel="Predicted |λE−λZ| (nm)", ylabel="Evaluator half-life (h)", title="Azo proxy space")
-fig.colorbar(scatter, ax=axes[0], label="reward")
+fig.colorbar(scatter, ax=axes[0], label="selection score")
 axes[1].hist(azo["pred_delta_lambda_nm"], bins=30, color="tab:purple", alpha=0.75)
 axes[1].axvline(20, color="black", ls="--")
 axes[1].set(xlabel="Predicted E/Z separation (nm)", ylabel="count", title="Azo spectral separation")
@@ -133,13 +153,14 @@ plt.show()
 def show_family_pairs(family, count=9):
     top = (
         df[df["family"].eq(family)]
-        .sort_values(["final_status", "reward"], ascending=[False, False])
+        .sort_values("rank_within_family")
         .drop_duplicates("canonical_smiles")
         .head(count)
     )
     display(top[[
-        "canonical_smiles", "state_A_smiles", "state_B_smiles",
-        "eval_uv_lambda_nm", "sa_score", "reward", "final_status",
+        "candidate_id", "rank_within_family", "canonical_smiles",
+        "state_A_smiles", "state_B_smiles", "eval_uv_lambda_nm", "sa_score",
+        "selection_score", "final_status",
     ]])
     state_a = [Chem.MolFromSmiles(s) for s in top["state_A_smiles"]]
     state_b = [Chem.MolFromSmiles(s) for s in top["state_B_smiles"]]
@@ -162,6 +183,65 @@ show_family_pairs("stilbene")
 и E/Z spectral proxies. Для stilbene-like подтверждены лишь diaryl/heteroaryl
 alkene E/Z pair и общий UVVisML proxy. PSS, quantum yield, ΔH и stored energy
 намеренно остаются пустыми для обоих классов до физической валидации.
+        """
+    ),
+    md(
+        """
+## Метрики генерации
+
+Отдельный финальный вывод показывает метрики как для всех 36 000 proposals,
+так и для отобранного top-1000. Единичные метрики top-1000 являются следствием
+целевого отбора; качество самого generator следует оценивать по scope
+`all_proposals`.
+        """
+    ),
+    code(
+        """
+metrics = pd.read_csv(METRICS_PATH)
+required_metrics = {
+    "scope", "family", "n_generated", "n_valid", "n_unique",
+    "n_not_in_training", "n_joint_success", "validity", "uniqueness",
+    "novelty", "joint_success_rate", "diversity",
+}
+missing_metrics = required_metrics.difference(metrics.columns)
+if missing_metrics:
+    raise KeyError(f"generation_metrics.csv is missing: {sorted(missing_metrics)}")
+
+scope_order = ["all_proposals", "top_1000"]
+family_order = ["all", "azo", "stilbene"]
+metrics["scope"] = pd.Categorical(metrics["scope"], scope_order, ordered=True)
+metrics["family"] = pd.Categorical(metrics["family"], family_order, ordered=True)
+metrics = metrics.sort_values(["scope", "family"]).reset_index(drop=True)
+
+formulas = pd.DataFrame({
+    "metric": ["Validity", "Uniqueness", "Novelty", "JSR", "Diversity"],
+    "definition": [
+        "Nvalid / Ngenerated",
+        "Nunique_valid / Nvalid",
+        "Nunique_valid_not_in_training / Nunique_valid",
+        "N(target_A_pass AND target_B_pass) / Ngenerated",
+        "1 - mean pairwise Morgan/Tanimoto similarity over unique valid structures",
+    ],
+})
+display(formulas)
+
+metrics_display = metrics.copy()
+rate_columns = ["validity", "uniqueness", "novelty", "joint_success_rate", "diversity"]
+metrics_display[rate_columns] = metrics_display[rate_columns].round(6)
+display(metrics_display)
+
+overall = (
+    metrics[metrics["family"].eq("all")]
+    .set_index("scope")[rate_columns]
+    .rename(columns={"joint_success_rate": "JSR"})
+)
+axes = overall.T.plot.bar(figsize=(12, 4.8), ylim=(0, 1.05), width=0.78)
+axes.set(title="Generation metrics: raw proposals vs selected top-1000", xlabel="metric", ylabel="value")
+axes.grid(axis="y", alpha=0.25)
+axes.legend(title="scope", loc="lower right")
+plt.xticks(rotation=0)
+plt.tight_layout()
+plt.show()
         """
     ),
 ]

@@ -26,21 +26,76 @@ def _float(row: dict[str, Any], key: str, default: float = 0.0) -> float:
 
 
 def _internal_diversity(rows: list[dict[str, Any]], bits: int, seed: int = 701) -> float:
+    """Return the exact mean pairwise Morgan/Tanimoto distance.
+
+    ``seed`` is retained for compatibility with older callers.  The calculation
+    is now exact and deterministic rather than a sample of at most 500 pairs.
+    """
+    del seed
     unique = sorted({row["smiles"] for row in rows})
-    if len(unique) < 2:
+    count = len(unique)
+    if count < 2:
         return 0.0
-    rng = random.Random(seed)
-    pairs = []
-    max_pairs = min(500, len(unique) * (len(unique) - 1) // 2)
-    seen = set()
-    while len(pairs) < max_pairs:
-        left, right = sorted(rng.sample(range(len(unique)), 2))
-        if (left, right) in seen:
-            continue
-        seen.add((left, right))
-        pairs.append((left, right))
     fps = [fingerprint(smiles, bits) for smiles in unique]
-    return fmean(1.0 - float(DataStructs.TanimotoSimilarity(fps[left], fps[right])) for left, right in pairs)
+    similarity_sum = 0.0
+    for right in range(1, count):
+        similarity_sum += sum(DataStructs.BulkTanimotoSimilarity(fps[right], fps[:right]))
+    return 1.0 - (2.0 * similarity_sum) / (count * (count - 1))
+
+
+def generative_quality_metrics(
+    rows: list[dict[str, Any]],
+    training_smiles: set[str],
+    bits: int,
+    *,
+    smiles_key: str = "smiles",
+    valid_key: str = "valid",
+    joint_a_key: str | None = None,
+    joint_b_key: str | None = None,
+    joint_key: str | None = None,
+) -> dict[str, Any]:
+    """Compute the standard generation metrics with their explicit counts.
+
+    Uniqueness and novelty are defined on valid canonical structures.  JSR uses
+    all generated rows as its denominator; invalid or unevaluated rows therefore
+    count as failures.  Diversity is the exact mean pairwise distance over the
+    unique valid structures.
+    """
+    n_generated = len(rows)
+    valid_rows = [row for row in rows if _truth(row.get(valid_key)) and row.get(smiles_key)]
+    unique_valid = sorted({str(row[smiles_key]) for row in valid_rows})
+    n_valid = len(valid_rows)
+    n_unique = len(unique_valid)
+    n_novel = sum(smiles not in training_smiles for smiles in unique_valid)
+    diversity_rows = [{"smiles": smiles} for smiles in unique_valid]
+
+    if joint_a_key is not None and joint_b_key is not None:
+        n_joint_success = sum(
+            _truth(row.get(valid_key))
+            and _truth(row.get(joint_a_key))
+            and _truth(row.get(joint_b_key))
+            for row in rows
+        )
+    elif joint_key is not None:
+        n_joint_success = sum(
+            _truth(row.get(valid_key)) and _truth(row.get(joint_key))
+            for row in rows
+        )
+    else:
+        n_joint_success = 0
+
+    return {
+        "n_generated": n_generated,
+        "n_valid": n_valid,
+        "n_unique": n_unique,
+        "n_not_in_training": n_novel,
+        "n_joint_success": n_joint_success,
+        "validity": n_valid / n_generated if n_generated else 0.0,
+        "uniqueness": n_unique / n_valid if n_valid else 0.0,
+        "novelty": n_novel / n_unique if n_unique else 0.0,
+        "joint_success_rate": n_joint_success / n_generated if n_generated else 0.0,
+        "diversity": _internal_diversity(diversity_rows, bits),
+    }
 
 
 def _effective_sample_size(weights: list[float]) -> float:
@@ -50,21 +105,28 @@ def _effective_sample_size(weights: list[float]) -> float:
 
 
 def _run_metrics(rows: list[dict[str, Any]], training_smiles: set[str], bits: int) -> dict[str, Any]:
-    n = len(rows)
-    unique = {row["smiles"] for row in rows}
     valid = [row for row in rows if _truth(row.get("valid"))]
-    scaffolds = {murcko_scaffold(row["smiles"]) for row in valid}
-    families = Counter(row["family"] for row in valid)
+    valid_by_smiles = {row["smiles"]: row for row in valid}
+    valid_unique = list(valid_by_smiles.values())
+    quality = generative_quality_metrics(
+        rows,
+        training_smiles,
+        bits,
+        joint_key="joint_pass",
+    )
+    n = quality["n_generated"]
+    scaffolds = {murcko_scaffold(row["smiles"]) for row in valid_unique}
+    families = Counter(row["family"] for row in valid_unique)
     rewards = [_float(row, "reward") for row in rows]
     return {
         "evaluated": n,
-        "validity": len(valid) / n if n else 0.0,
-        "uniqueness": len(unique) / n if n else 0.0,
-        "novelty": sum(row["smiles"] not in training_smiles for row in valid) / len(valid) if valid else 0.0,
-        "internal_diversity": _internal_diversity(valid, bits),
-        "scaffold_diversity": len(scaffolds) / len(valid) if valid else 0.0,
-        "mean_sa_score": fmean(_float(row, "sa_score", 10.0) for row in valid) if valid else 10.0,
-        "joint_success": sum(_truth(row.get("joint_pass")) for row in rows) / n if n else 0.0,
+        "validity": quality["validity"],
+        "uniqueness": quality["uniqueness"],
+        "novelty": quality["novelty"],
+        "internal_diversity": quality["diversity"],
+        "scaffold_diversity": len(scaffolds) / len(valid_unique) if valid_unique else 0.0,
+        "mean_sa_score": fmean(_float(row, "sa_score", 10.0) for row in valid_unique) if valid_unique else 10.0,
+        "joint_success": quality["joint_success_rate"],
         "both_ad_fraction": sum(_truth(row.get("ad_spectral")) and _truth(row.get("ad_most")) for row in rows) / n if n else 0.0,
         "family_coverage": sum(1 for family in families if families[family] > 0) / 3.0,
         "nbd_qc_count": families["nbd_qc"],

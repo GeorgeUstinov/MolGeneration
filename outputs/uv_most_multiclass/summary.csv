@@ -1,5 +1,5 @@
-family,final_status,rows
-azo,FAIL_PROXY,3942
-azo,PASS_AZO_PROXY,852
-stilbene,FAIL_PROXY,4427
-stilbene,PASS_STILBENE_STRUCTURAL_PROXY,10405
+family,final_status,rows,selected_top_1000
+azo,FAIL_PROXY,4230,0
+azo,PASS_AZO_PROXY,883,500
+stilbene,FAIL_PROXY,4911,0
+stilbene,PASS_STILBENE_STRUCTURAL_PROXY,10456,507

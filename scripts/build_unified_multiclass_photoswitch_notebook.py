@@ -63,6 +63,8 @@ from rdkit.Chem.MolStandardize import rdMolStandardize
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
+from mostgen.metrics import generative_quality_metrics
+
 RDLogger.DisableLog("rdApp.*")
 ROOT = Path.cwd().resolve()
 OUT = ROOT / "outputs" / "uv_most_multiclass"
@@ -78,6 +80,9 @@ PRIOR_EPOCHS = 6 if DEVICE.type == "cpu" else 8
 RL_STEPS = 150
 RL_BATCH_PER_FAMILY = 48
 FINAL_PROPOSALS = {"azo": 6000, "stilbene": 30000}
+TOP_CANDIDATES = 1000
+TOP_PER_FAMILY = TOP_CANDIDATES // len(FAMILIES)
+assert TOP_CANDIDATES % len(FAMILIES) == 0
 
 def seed_everything(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -225,7 +230,7 @@ def encoded(smiles, family):
 records = [r for s in balanced_azo if (r := encoded(s, "azo"))]
 records += [r for s in stilbene_smiles if (r := encoded(s, "stilbene"))]
 records.sort(key=lambda r: hashlib.sha256((r[0] + "|" + r[1]).encode()).hexdigest())
-known_union = set(dataset_a.canonical_smiles) | set(dataset_b.canonical_smiles)
+training_smiles = {smiles for _, smiles, _ in records}
 print(f"conditional corpus: azo={len(balanced_azo)}, stilbene={len(stilbene_smiles)}, total={len(records)}")
 """
     ),
@@ -345,7 +350,7 @@ def policy_terms(agent,frozen,sequences):
     return (selected*mask).sum(1)/lengths,((ap*(alp-plp)).sum(-1)*mask).sum(1)/lengths,(-(ap*alp).sum(-1)*mask).sum(1)/lengths
 
 def score_batch(smiles_values,family):
-    rows=[common_filter(s,family) for s in smiles_values];eligible=[i for i,r in enumerate(rows) if r["passes_common_filter"] and r["canonical_smiles"] not in known_union]
+    rows=[common_filter(s,family) for s in smiles_values];eligible=[i for i,r in enumerate(rows) if r["passes_common_filter"] and r["canonical_smiles"] not in training_smiles]
     if eligible:
         smiles=[rows[i]["canonical_smiles"] for i in eligible];uv,uv_unc=predict_models(reward_uv,smiles)
         if family=="azo":
@@ -399,25 +404,98 @@ for family in FAMILIES:
     while remaining:
         n=min(256,remaining);smiles,_=sample_conditioned(agent,family,n);proposals.extend(smiles);remaining-=n
     scored=score_batch(proposals,family);scored["method_id"]="unified_conditional_rl";parts.append(scored)
-audit=pd.concat(parts,ignore_index=True);audit.to_csv(OUT/"proposal_audit.csv",index=False)
-generated=audit[audit.passes_common_filter & ~audit.canonical_smiles.isin(known_union)].drop_duplicates(["family","canonical_smiles"]).copy()
+audit=pd.concat(parts,ignore_index=True)
 
+# Evaluate every unique valid proposal so JSR has exactly N_generated as its
+# denominator. Invalid/unevaluated proposals are mapped to target failures.
+evaluated=(audit[audit.valid & audit.canonical_smiles.ne("")]
+           .drop_duplicates(["family","canonical_smiles"]).copy())
 for family in FAMILIES:
-    idx=generated.family.eq(family);smiles=generated.loc[idx,"canonical_smiles"].tolist();uv,uv_unc=predict_models(evaluator_uv,smiles)
-    generated.loc[idx,"eval_uv_lambda_nm"]=uv;generated.loc[idx,"eval_uv_uncertainty_nm"]=uv_unc
+    idx=evaluated.family.eq(family);smiles=evaluated.loc[idx,"canonical_smiles"].tolist()
+    if not smiles:continue
+    uv,uv_unc=predict_models(evaluator_uv,smiles)
+    evaluated.loc[idx,"eval_uv_lambda_nm"]=uv;evaluated.loc[idx,"eval_uv_uncertainty_nm"]=uv_unc
     if family=="azo":
-        half,half_unc=predict_models(evaluator_half,smiles);generated.loc[idx,"eval_half_life_h"]=10**half;generated.loc[idx,"eval_half_uncertainty_log10_h"]=half_unc
+        half,half_unc=predict_models(evaluator_half,smiles)
+        em,_=predict_list(azo_E_models,smiles);zm,_=predict_list(azo_Z_models,smiles)
+        evaluated.loc[idx,"eval_half_life_h"]=10**half
+        evaluated.loc[idx,"eval_half_uncertainty_log10_h"]=half_unc
+        evaluated.loc[idx,"pred_delta_lambda_nm"]=np.abs(em-zm)
 
-generated["final_status"]="FAIL_PROXY"
-azo_mask=generated.family.eq("azo") & generated.eval_uv_lambda_nm.between(300,400) & generated.eval_half_life_h.between(4,24) & generated.pred_delta_lambda_nm.ge(20)
-stilbene_mask=generated.family.eq("stilbene") & generated.eval_uv_lambda_nm.between(300,400) & generated.pair_valid
-generated.loc[azo_mask,"final_status"]="PASS_AZO_PROXY"
-generated.loc[stilbene_mask,"final_status"]="PASS_STILBENE_STRUCTURAL_PROXY"
-generated["PSS_pred"]=np.nan;generated["quantum_yield_pred"]=np.nan;generated["deltaH_kJ_mol"]=np.nan;generated["stored_energy_MJ_kg"]=np.nan
+evaluated["target_A_pass"]=evaluated.eval_uv_lambda_nm.between(300,400)
+evaluated["target_B_pass"]=False
+azo_idx=evaluated.family.eq("azo")
+stilbene_idx=evaluated.family.eq("stilbene")
+evaluated.loc[azo_idx,"target_B_pass"]=(evaluated.loc[azo_idx,"eval_half_life_h"].between(4,24) &
+                                         evaluated.loc[azo_idx,"pred_delta_lambda_nm"].ge(20))
+evaluated.loc[stilbene_idx,"target_B_pass"]=evaluated.loc[stilbene_idx,"pair_valid"]
+evaluated["joint_success"]=evaluated.target_A_pass & evaluated.target_B_pass
+
+def evaluator_selection_score(row):
+    components=[
+        interval(row.eval_uv_lambda_nm,row.eval_uv_uncertainty_nm,300,400,14),
+        math.exp(-float(row.eval_uv_uncertainty_nm)/70),
+        math.exp(-.3*max(0,float(row.sa_score)-3)),
+    ]
+    if row.family=="azo":
+        components += [
+            interval(math.log10(row.eval_half_life_h),row.eval_half_uncertainty_log10_h,math.log10(4),math.log10(24),.18),
+            math.exp(-float(row.eval_half_uncertainty_log10_h)/1.2),
+            float(sigmoid((row.pred_delta_lambda_nm-20)/8)),
+        ]
+    return float(np.prod(np.clip(components,1e-12,1))**(1/len(components)))
+
+evaluated["selection_score"]=evaluated.apply(evaluator_selection_score,axis=1)
+evaluated["final_status"]="FAIL_PROXY"
+evaluated.loc[azo_idx & evaluated.joint_success,"final_status"]="PASS_AZO_PROXY"
+evaluated.loc[stilbene_idx & evaluated.joint_success,"final_status"]="PASS_STILBENE_STRUCTURAL_PROXY"
+evaluated["PSS_pred"]=np.nan;evaluated["quantum_yield_pred"]=np.nan;evaluated["deltaH_kJ_mol"]=np.nan;evaluated["stored_energy_MJ_kg"]=np.nan
+
+metric_flags=evaluated[["family","canonical_smiles","target_A_pass","target_B_pass","joint_success"]]
+audit=audit.drop(columns=["target_A_pass","target_B_pass","joint_success"],errors="ignore").merge(
+    metric_flags,on=["family","canonical_smiles"],how="left")
+for column in ["target_A_pass","target_B_pass","joint_success"]:
+    audit[column]=audit[column].fillna(False).astype(bool)
+audit.to_csv(OUT/"proposal_audit.csv",index=False)
+
+candidate_pool=evaluated[evaluated.passes_common_filter & ~evaluated.canonical_smiles.isin(training_smiles)].copy()
+candidate_pool=candidate_pool.sort_values(
+    ["family","joint_success","selection_score","reward","canonical_smiles"],
+    ascending=[True,False,False,False,True],kind="mergesort")
+candidate_pool["rank_within_family"]=candidate_pool.groupby("family").cumcount()+1
+
+# A balanced shortlist avoids comparing scores backed by different endpoint sets.
+selected_parts=[];selected_smiles=set()
+for family in FAMILIES:
+    family_pool=candidate_pool[candidate_pool.family.eq(family) & ~candidate_pool.canonical_smiles.isin(selected_smiles)]
+    chosen=family_pool.head(TOP_PER_FAMILY).copy()
+    assert len(chosen)==TOP_PER_FAMILY,f"not enough {family} candidates"
+    selected_smiles.update(chosen.canonical_smiles)
+    selected_parts.append(chosen)
+generated=pd.concat(selected_parts,ignore_index=True)
+generated["candidate_id"]=[f"MC-{row.family.upper()}-{rank:04d}" for rank,row in enumerate(generated.itertuples(),1)]
+generated.insert(0,"selection_rank",np.arange(1,len(generated)+1))
 generated.to_csv(ROOT/"generated_multiclass_photoswitch.csv",index=False)
-summary=generated.groupby(["family","final_status"]).size().rename("rows").reset_index();summary.to_csv(OUT/"summary.csv",index=False);display(summary)
-assert set(generated.family)==set(FAMILIES)
-assert generated.groupby("family").size().min()>100
+candidate_pool.to_csv(OUT/"candidate_pool.csv",index=False)
+
+metric_rows=[]
+for scope,frame in [("all_proposals",audit),("top_1000",generated)]:
+    for family in ("all",*FAMILIES):
+        subset=frame if family=="all" else frame[frame.family.eq(family)]
+        values=generative_quality_metrics(
+            subset.to_dict(orient="records"),training_smiles,2048,
+            smiles_key="canonical_smiles",joint_a_key="target_A_pass",joint_b_key="target_B_pass")
+        metric_rows.append({"scope":scope,"family":family,**values})
+metrics=pd.DataFrame(metric_rows)
+metrics.to_csv(OUT/"generation_metrics.csv",index=False)
+
+summary=(candidate_pool.groupby(["family","final_status"])
+         .agg(rows=("canonical_smiles","size"),selected_top_1000=("canonical_smiles",lambda values: values.isin(selected_smiles).sum()))
+         .reset_index())
+summary.to_csv(OUT/"summary.csv",index=False);display(summary);display(metrics)
+assert len(generated)==TOP_CANDIDATES
+assert generated.canonical_smiles.nunique()==TOP_CANDIDATES
+assert generated.groupby("family").size().eq(TOP_PER_FAMILY).all()
 for state_a_smiles, state_b_smiles in zip(generated.state_A_smiles, generated.state_B_smiles):
     state_a, state_b = Chem.MolFromSmiles(state_a_smiles), Chem.MolFromSmiles(state_b_smiles)
     assert state_a is not None and state_b is not None
@@ -426,13 +504,24 @@ for state_a_smiles, state_b_smiles in zip(generated.state_A_smiles, generated.st
 manifest = {
     "purpose": "one conditional SELFIES-GRU for azo and stilbene-like E/Z photoswitch candidates",
     "generator": {"architecture": "ConditionalGRU", "single_checkpoint": str(MODEL_DIR/"unified_conditional_agent.pt"), "family_tokens": FAMILY_TOKENS},
-    "sources": {"M01": "The Photoswitch Dataset", "UVVisML": "pinned cached split files"},
+    "sources": {"M01": "The Photoswitch Dataset", "UVVisML": "pinned cached split files", "generator_training_structures": len(training_smiles)},
     "families": summary.to_dict(orient="records"),
+    "selection": {"total": TOP_CANDIDATES, "per_family": TOP_PER_FAMILY, "primary": "joint_success", "secondary": "evaluator/proxy selection_score"},
+    "metrics": {
+        "path": str(OUT/"generation_metrics.csv"),
+        "validity": "N_valid / N_generated",
+        "uniqueness": "N_unique_valid / N_valid",
+        "novelty": "N_unique_valid_not_in_training / N_unique_valid",
+        "joint_success_rate": "mean(target_A_pass AND target_B_pass) over N_generated",
+        "diversity": "1 - mean pairwise Morgan(radius=2,2048-bit) Tanimoto over unique valid structures",
+        "target_A": "held-out evaluator UV lambda in [300, 400] nm",
+        "target_B": {"azo": "held-out evaluator half-life in [4,24] h AND M01 transition-proxy delta-lambda >= 20 nm", "stilbene": "valid structural E/Z pair"},
+    },
     "scope_warning": "stilbene-like has structural E/Z and UV proxy only; PSS, quantum yield, half-life and stored energy are unavailable",
     "missing_physical_endpoints": ["PSS", "quantum_yield", "deltaH_kJ_mol", "stored_energy_MJ_kg"],
 }
 (OUT/"run_manifest.json").write_text(json.dumps(manifest,indent=2),encoding="utf-8")
-print(f"rows={len(generated):,}; one checkpoint={MODEL_DIR/'unified_conditional_agent.pt'}")
+print(f"selected={len(generated):,}; pool={len(candidate_pool):,}; one checkpoint={MODEL_DIR/'unified_conditional_agent.pt'}")
 """
     ),
     md(
