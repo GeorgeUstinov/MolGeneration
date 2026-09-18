@@ -18,21 +18,23 @@ def code(text: str):
 cells = [
     md(
         """
-# One conditional generator for two photoswitch classes
+# Conditional generator and safety screen for four photoswitch classes
 
-Одна общая SELFIES-GRU policy генерирует два класса по управляющему токену:
+Одна общая SELFIES-GRU policy обучается с четырьмя управляющими токенами:
 
 - `<AZO>` — `N=N` E/Z photoswitch;
 - `<STILBENE>` — diaryl-alkene E/Z candidate.
+- `<SPIROPYRAN>` — spiropyran/merocyanine pair;
+- `<DIARYLETHENE>` — open/closed dithienylethene pair.
 
 У модели единые embedding, GRU, vocabulary, optimizer и checkpoint. Различаются
 только химические правила построения state-pair и доступные property labels.
-Один общий structural/SA filter применяется к обоим классам; отдельных
-class-specific toxicity filters нет.
+Для классов с изменением связности используются reaction-constrained templates.
 
-Для stilbene-like класса есть экспериментальный `λmax` из UVVisML, но нет
-достаточной разметки half-life, PSS, quantum yield и ΔH. Эти значения не
-переносятся с azo и сохраняются как missing.
+Пространство A теперь означает MOST/photoswitch suitability, а пространство B —
+экспериментально обученный 3T3 NRU phototoxicity screen. QDB labels являются
+целевой переменной; ADME-like descriptors используются только как признаки.
+PhotoChem применяется для независимой проверки согласия labels по CAS.
         """
     ),
     code(
@@ -64,6 +66,14 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from mostgen.metrics import generative_quality_metrics
+from mostgen.chemistry import build_pair as build_template_pair
+from mostgen.config import load_config
+from mostgen.phototoxicity import (
+    cross_validate_phototoxicity,
+    fit_phototoxicity_ensemble,
+    load_experimental_phototoxicity,
+)
+from mostgen.photoswitch_pairs import build_diarylethene_pair
 
 RDLogger.DisableLog("rdApp.*")
 ROOT = Path.cwd().resolve()
@@ -73,16 +83,24 @@ OUT.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 BASE_SEED = 20260917
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-FAMILIES = ("azo", "stilbene")
-FAMILY_TOKENS = {"azo": "<AZO>", "stilbene": "<STILBENE>"}
+FAMILIES = ("azo", "stilbene", "spiropyran", "diarylethene")
+FAMILY_TOKENS = {
+    "azo": "<AZO>",
+    "stilbene": "<STILBENE>",
+    "spiropyran": "<SPIROPYRAN>",
+    "diarylethene": "<DIARYLETHENE>",
+}
 MAX_TOKENS = 100
 PRIOR_EPOCHS = 6 if DEVICE.type == "cpu" else 8
-RL_STEPS = 150
+RL_STEPS = 120
 RL_BATCH_PER_FAMILY = 48
-FINAL_PROPOSALS = {"azo": 6000, "stilbene": 30000}
+FINAL_PROPOSALS = {"azo": 8000, "stilbene": 8000, "spiropyran": 0, "diarylethene": 0}
+TEMPLATE_RL_PROPOSALS = 2000
 TOP_CANDIDATES = 1000
 TOP_PER_FAMILY = TOP_CANDIDATES // len(FAMILIES)
+TOXICITY_SCREEN_THRESHOLD = 0.70
 assert TOP_CANDIDATES % len(FAMILIES) == 0
+assert max(FINAL_PROPOSALS.values()) <= 10_000
 
 def seed_everything(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -109,6 +127,7 @@ REACTIVE_QUERIES = [Chem.MolFromSmarts(x) for x in (
     "[CX3](=[OX1])[F,Cl,Br,I]", "[SX4](=[OX1])(=[OX1])[F,Cl,Br,I]",
     "[NX2]=[CX2]=[OX1]", "[OX2]-[OX2]", "[N+]#N",
 )]
+PAIR_LOOKUP = {}
 if str(Path(RDConfig.RDContribDir) / "SA_Score") not in sys.path:
     sys.path.insert(0, str(Path(RDConfig.RDContribDir) / "SA_Score"))
 import sascorer
@@ -140,6 +159,7 @@ def fp_matrix(smiles_values):
     return matrix
 
 def build_ez_pair(smiles, family):
+    if family not in {"azo", "stilbene"}: return None
     mol = Chem.MolFromSmiles(smiles)
     if mol is None: return None
     for bond in mol.GetBonds():
@@ -196,9 +216,10 @@ def common_filter(smiles, family):
     mw = float(Descriptors.MolWt(mol)); sa = float(sascorer.calculateScore(mol)); qed = float(QED.qed(mol))
     rotors = int(Lipinski.NumRotatableBonds(mol))
     row.update({"molecular_weight": mw, "sa_score": sa, "qed": qed, "rotatable_bonds": rotors})
-    if not 120 <= mw <= 650 or sa > 6 or qed < 0.10 or rotors > 14 or abs(Chem.GetFormalCharge(mol)) > 1:
+    maximum_mw = 725 if family == "diarylethene" else 650
+    if not 120 <= mw <= maximum_mw or sa > 6 or qed < 0.10 or rotors > 14 or abs(Chem.GetFormalCharge(mol)) > 1:
         row["filter_reason"] = "size_sa_qed_charge"; return row
-    pair = build_ez_pair(canonical, family)
+    pair = PAIR_LOOKUP.get((family, canonical)) if family in {"spiropyran", "diarylethene"} else build_ez_pair(canonical, family)
     if pair is None:
         row["filter_reason"] = "family_motif_or_pair"; return row
     row.update({"state_A_smiles": pair[0], "state_B_smiles": pair[1], "pair_valid": True,
@@ -206,7 +227,7 @@ def common_filter(smiles, family):
     return row
 """
     ),
-    md("## Build a balanced two-family corpus"),
+    md("## Build a balanced four-family corpus"),
     code(
         r"""
 dataset_a = pd.read_csv(ROOT / "outputs" / "uv_most_joint" / "dataset_A_curated.csv")
@@ -219,25 +240,71 @@ for smiles in stilbene_candidates:
     if mol is not None and mol.HasSubstructMatch(STILBENE_QUERY) and build_ez_pair(smiles, "stilbene"):
         stilbene_smiles.append(smiles)
 stilbene_smiles = sorted(stilbene_smiles, key=lambda s: hashlib.sha256(s.encode()).hexdigest())[:1800]
-repeat_azo = math.ceil(len(stilbene_smiles) / max(len(azo_smiles), 1))
-balanced_azo = (azo_smiles * repeat_azo)[:len(stilbene_smiles)]
+
+# Reaction-constrained libraries guarantee chemically paired states for the
+# connectivity-changing classes.  Only a deterministic subset enters prior
+# training; the held-out combinations form novel enumerated proposals.
+template_config = load_config(ROOT / "config" / "default.json", mode="smoke")
+template_rows = []
+for first in template_config["synthons"]:
+    for second in template_config["synthons"]:
+        try:
+            pair = build_template_pair(template_config, "spiropyran", first["id"], second["id"])
+            template_rows.append({"family":"spiropyran", "smiles":pair.smiles, "state_B":pair.charged_smiles})
+        except Exception:
+            pass
+        try:
+            pair = build_diarylethene_pair(first["smiles"], second["smiles"])
+            template_rows.append({"family":"diarylethene", "smiles":pair.state_a_smiles, "state_B":pair.state_b_smiles})
+        except Exception:
+            pass
+template_unique = {}
+for row in template_rows:
+    canonical = standardize_smiles(row["smiles"])
+    state_b = standardize_smiles(row["state_B"])
+    if canonical and state_b:
+        template_unique.setdefault((row["family"], canonical), (canonical, state_b))
+PAIR_LOOKUP.update({key:value for key,value in template_unique.items()})
+
+template_training = {}; TEMPLATE_HOLDOUT = {}
+for family in ("spiropyran", "diarylethene"):
+    members = [value[0] for key,value in template_unique.items() if key[0] == family]
+    members = [smiles for smiles in members if common_filter(smiles, family)["passes_common_filter"]]
+    members = sorted(set(members), key=lambda s: hashlib.sha256((family+"|"+s).encode()).hexdigest())
+    template_training[family] = members[:180]
+    TEMPLATE_HOLDOUT[family] = members[180:]
+    if len(TEMPLATE_HOLDOUT[family]) < TOP_PER_FAMILY:
+        raise RuntimeError(f"Insufficient held-out {family} templates: {len(TEMPLATE_HOLDOUT[family])}")
+
+target_corpus_size = max(len(stilbene_smiles), 1)
+def balance(values):
+    return (values * math.ceil(target_corpus_size / max(len(values), 1)))[:target_corpus_size]
+
+family_corpora = {
+    "azo": balance(azo_smiles),
+    "stilbene": balance(stilbene_smiles),
+    "spiropyran": balance(template_training["spiropyran"]),
+    "diarylethene": balance(template_training["diarylethene"]),
+}
 
 def encoded(smiles, family):
     try: tokens = list(sf.split_selfies(sf.encoder(smiles)))
     except Exception: return None
     return (family, smiles, tokens) if 1 <= len(tokens) <= MAX_TOKENS else None
 
-records = [r for s in balanced_azo if (r := encoded(s, "azo"))]
-records += [r for s in stilbene_smiles if (r := encoded(s, "stilbene"))]
+records = []
+for family, corpus in family_corpora.items():
+    records += [record for smiles in corpus if (record := encoded(smiles, family))]
 records.sort(key=lambda r: hashlib.sha256((r[0] + "|" + r[1]).encode()).hexdigest())
 training_smiles = {smiles for _, smiles, _ in records}
-print(f"conditional corpus: azo={len(balanced_azo)}, stilbene={len(stilbene_smiles)}, total={len(records)}")
+print("conditional corpus:", {family:len(corpus) for family,corpus in family_corpora.items()}, "total=",len(records))
+print("held-out template proposals:", {family:len(values) for family,values in TEMPLATE_HOLDOUT.items()})
 """
     ),
     md("## One conditional SELFIES-GRU"),
     code(
         r"""
-SPECIAL = ["<pad>", "<bos>", "<eos>", "<AZO>", "<STILBENE>"]
+SPECIAL = ["<pad>", "<bos>", "<eos>", *FAMILY_TOKENS.values()]
 vocabulary = SPECIAL + sorted({token for _, _, tokens in records for token in tokens})
 token_to_id = {token: i for i, token in enumerate(vocabulary)}
 id_to_token = {i: token for token, i in token_to_id.items()}
@@ -288,6 +355,27 @@ reward_uv = joblib.load(ROOT / "outputs" / "uv_most_joint" / "models" / "reward_
 reward_half = joblib.load(ROOT / "outputs" / "uv_most_joint" / "models" / "reward_A_rf.joblib")
 evaluator_uv = joblib.load(ROOT / "outputs" / "uv_most_joint" / "models" / "evaluator_B_extra_trees.joblib")
 evaluator_half = joblib.load(ROOT / "outputs" / "uv_most_joint" / "models" / "evaluator_A_extra_trees.joblib")
+
+toxicity_data = load_experimental_phototoxicity(
+    ROOT / "datasets" / "QDB_2011TIV324_phototoxicity_normalized.xlsx",
+    ROOT / "datasets" / "PhotoChem_phototoxicity_251_verified.xlsx",
+)
+toxicity_cv = cross_validate_phototoxicity(toxicity_data, seed=BASE_SEED)
+reward_toxicity = fit_phototoxicity_ensemble(
+    toxicity_data, model_kind="random_forest", seed=BASE_SEED+701,
+    threshold=TOXICITY_SCREEN_THRESHOLD,
+)
+evaluator_toxicity = fit_phototoxicity_ensemble(
+    toxicity_data, model_kind="extra_trees", seed=BASE_SEED+801,
+    threshold=TOXICITY_SCREEN_THRESHOLD,
+)
+toxicity_data.to_csv(OUT / "phototoxicity_training.csv", index=False)
+pd.DataFrame([toxicity_cv]).to_csv(OUT / "phototoxicity_model_metrics.csv", index=False)
+joblib.dump(reward_toxicity, MODEL_DIR / "reward_phototoxicity_rf.joblib")
+joblib.dump(evaluator_toxicity, MODEL_DIR / "evaluator_phototoxicity_extra_trees.joblib")
+print("phototoxicity diagnostics:", toxicity_cv)
+print("PhotoChem CAS-linked calls:", int(toxicity_data.photochem_label.notna().sum()),
+      "agreement:", float(toxicity_data.photochem_agrees.dropna().mean()))
 
 m01 = pd.read_csv(ROOT / "data" / "raw" / "M01_photoswitch" / "dataset" / "photoswitches.csv")
 m01["canonical_smiles"] = m01.SMILES.map(standardize_smiles)
@@ -353,12 +441,22 @@ def score_batch(smiles_values,family):
     rows=[common_filter(s,family) for s in smiles_values];eligible=[i for i,r in enumerate(rows) if r["passes_common_filter"] and r["canonical_smiles"] not in training_smiles]
     if eligible:
         smiles=[rows[i]["canonical_smiles"] for i in eligible];uv,uv_unc=predict_models(reward_uv,smiles)
+        toxicity=reward_toxicity.predict(smiles).reset_index(drop=True)
         if family=="azo":
             half,half_unc=predict_models(reward_half,smiles);em,_=predict_list(azo_E_models,smiles);zm,_=predict_list(azo_Z_models,smiles)
         for pos,i in enumerate(eligible):
             row=rows[i];uv_score=float(interval(uv[pos],uv_unc[pos],300,400,14));sa_score=math.exp(-.3*max(0,row["sa_score"]-3))
-            components=[uv_score,math.exp(-float(uv_unc[pos])/70),sa_score]
-            row.update({"pred_uv_lambda_nm":float(uv[pos]),"pred_uv_uncertainty_nm":float(uv_unc[pos])})
+            tox=toxicity.iloc[pos]
+            domain_score=.35+.65*float(np.clip((tox.toxicity_similarity-.08)/.35,0,1))
+            components=[uv_score,math.exp(-float(uv_unc[pos])/70),sa_score,
+                        max(.02,1-float(tox.phototoxic_probability)),
+                        math.exp(-3*float(tox.phototoxic_uncertainty)),domain_score]
+            if not bool(tox.toxicity_pass): components.append(.05)
+            row.update({"pred_uv_lambda_nm":float(uv[pos]),"pred_uv_uncertainty_nm":float(uv_unc[pos]),
+                        "reward_phototoxic_probability":float(tox.phototoxic_probability),
+                        "reward_phototoxic_uncertainty":float(tox.phototoxic_uncertainty),
+                        "reward_toxicity_similarity":float(tox.toxicity_similarity),
+                        "reward_toxicity_pass":bool(tox.toxicity_pass)})
             if family=="azo":
                 delta=abs(float(em[pos]-zm[pos]));half_score=float(interval(half[pos],half_unc[pos],math.log10(4),math.log10(24),.18))
                 components += [float(sigmoid((delta-20)/8)),half_score,math.exp(-float(half_unc[pos])/1.2)]
@@ -389,21 +487,30 @@ for step in range(1,RL_STEPS+1):
     rewards=torch.cat(all_rewards);advantage=torch.cat(all_advantages);logp=torch.cat(all_logp);kl=torch.cat(all_kl);entropy=torch.cat(all_entropy)
     loss=-(advantage.detach()*logp).mean()+.035*kl.mean()-.002*entropy.mean()
     optimizer.zero_grad(set_to_none=True);loss.backward();nn.utils.clip_grad_norm_(agent.parameters(),1);optimizer.step()
-    history.append({"step":step,"azo_reward":family_stats["azo"],"stilbene_reward":family_stats["stilbene"],"mean_reward":float(rewards.mean()),"archive":len(archive)})
+    history.append({"step":step,**{f"{family}_reward":family_stats[family] for family in FAMILIES},
+                    "mean_reward":float(rewards.mean()),"archive":len(archive)})
     if step==1 or step%20==0:print(history[-1])
 pd.DataFrame(history).to_csv(OUT/"rl_history.csv",index=False)
 torch.save({"state_dict":{k:v.detach().cpu() for k,v in agent.state_dict().items()},"vocabulary":vocabulary,"family_tokens":FAMILY_TOKENS,"seed":BASE_SEED},MODEL_DIR/"unified_conditional_agent.pt")
 """
     ),
-    md("## Generate both classes from the same model"),
+    md("## Generate all four classes (maximum 10,000 proposals per class)"),
     code(
         r"""
 parts=[]
-for family in FAMILIES:
-    seed_everything(BASE_SEED+1000+(0 if family=="azo" else 1));proposals=[];remaining=FINAL_PROPOSALS[family]
-    while remaining:
-        n=min(256,remaining);smiles,_=sample_conditioned(agent,family,n);proposals.extend(smiles);remaining-=n
-    scored=score_batch(proposals,family);scored["method_id"]="unified_conditional_rl";parts.append(scored)
+for family_index,family in enumerate(FAMILIES):
+    seed_everything(BASE_SEED+1000+family_index);proposals=[];sources=[]
+    if family in TEMPLATE_HOLDOUT:
+        proposals.extend(TEMPLATE_HOLDOUT[family]);sources.extend(["heldout_reaction_template"]*len(TEMPLATE_HOLDOUT[family]))
+        count=min(TEMPLATE_RL_PROPOSALS,10_000-len(proposals))
+        smiles,_=sample_conditioned(agent,family,count);proposals.extend(smiles);sources.extend(["unified_conditional_rl"]*count)
+    else:
+        remaining=FINAL_PROPOSALS[family]
+        while remaining:
+            n=min(256,remaining);smiles,_=sample_conditioned(agent,family,n);proposals.extend(smiles);remaining-=n
+        sources=["unified_conditional_rl"]*len(proposals)
+    assert len(proposals)<=10_000
+    scored=score_batch(proposals,family);scored["method_id"]=sources;parts.append(scored)
 audit=pd.concat(parts,ignore_index=True)
 
 # Evaluate every unique valid proposal so JSR has exactly N_generated as its
@@ -415,6 +522,8 @@ for family in FAMILIES:
     if not smiles:continue
     uv,uv_unc=predict_models(evaluator_uv,smiles)
     evaluated.loc[idx,"eval_uv_lambda_nm"]=uv;evaluated.loc[idx,"eval_uv_uncertainty_nm"]=uv_unc
+    toxicity=evaluator_toxicity.predict(smiles);toxicity.index=evaluated.index[idx]
+    for column in toxicity.columns:evaluated.loc[idx,column]=toxicity[column]
     if family=="azo":
         half,half_unc=predict_models(evaluator_half,smiles)
         em,_=predict_list(azo_E_models,smiles);zm,_=predict_list(azo_Z_models,smiles)
@@ -422,13 +531,16 @@ for family in FAMILIES:
         evaluated.loc[idx,"eval_half_uncertainty_log10_h"]=half_unc
         evaluated.loc[idx,"pred_delta_lambda_nm"]=np.abs(em-zm)
 
-evaluated["target_A_pass"]=evaluated.eval_uv_lambda_nm.between(300,400)
-evaluated["target_B_pass"]=False
+evaluated["photoswitch_space_pass"]=evaluated.eval_uv_lambda_nm.between(300,400) & evaluated.pair_valid
 azo_idx=evaluated.family.eq("azo")
 stilbene_idx=evaluated.family.eq("stilbene")
-evaluated.loc[azo_idx,"target_B_pass"]=(evaluated.loc[azo_idx,"eval_half_life_h"].between(4,24) &
-                                         evaluated.loc[azo_idx,"pred_delta_lambda_nm"].ge(20))
-evaluated.loc[stilbene_idx,"target_B_pass"]=evaluated.loc[stilbene_idx,"pair_valid"]
+spiropyran_idx=evaluated.family.eq("spiropyran")
+diarylethene_idx=evaluated.family.eq("diarylethene")
+evaluated.loc[azo_idx,"photoswitch_space_pass"]=(evaluated.loc[azo_idx,"photoswitch_space_pass"] &
+    evaluated.loc[azo_idx,"eval_half_life_h"].between(4,24) & evaluated.loc[azo_idx,"pred_delta_lambda_nm"].ge(20))
+evaluated["toxicity_space_pass"]=evaluated.toxicity_pass.fillna(False).astype(bool)
+evaluated["target_A_pass"]=evaluated.photoswitch_space_pass
+evaluated["target_B_pass"]=evaluated.toxicity_space_pass
 evaluated["joint_success"]=evaluated.target_A_pass & evaluated.target_B_pass
 
 def evaluator_selection_score(row):
@@ -436,6 +548,9 @@ def evaluator_selection_score(row):
         interval(row.eval_uv_lambda_nm,row.eval_uv_uncertainty_nm,300,400,14),
         math.exp(-float(row.eval_uv_uncertainty_nm)/70),
         math.exp(-.3*max(0,float(row.sa_score)-3)),
+        max(.02,1-float(row.phototoxic_probability)),
+        math.exp(-3*float(row.phototoxic_uncertainty)),
+        .35+.65*float(np.clip((row.toxicity_similarity-.08)/.35,0,1)),
     ]
     if row.family=="azo":
         components += [
@@ -446,19 +561,25 @@ def evaluator_selection_score(row):
     return float(np.prod(np.clip(components,1e-12,1))**(1/len(components)))
 
 evaluated["selection_score"]=evaluated.apply(evaluator_selection_score,axis=1)
-evaluated["final_status"]="FAIL_PROXY"
-evaluated.loc[azo_idx & evaluated.joint_success,"final_status"]="PASS_AZO_PROXY"
-evaluated.loc[stilbene_idx & evaluated.joint_success,"final_status"]="PASS_STILBENE_STRUCTURAL_PROXY"
+evaluated["final_status"]="FAIL_PHOTOSWITCH_OR_TOXICITY_SCREEN"
+evaluated.loc[azo_idx & evaluated.joint_success,"final_status"]="PASS_AZO_AND_TOXICITY_SCREEN"
+evaluated.loc[stilbene_idx & evaluated.joint_success,"final_status"]="PASS_STILBENE_AND_TOXICITY_SCREEN"
+evaluated.loc[spiropyran_idx & evaluated.joint_success,"final_status"]="PASS_SPIROPYRAN_AND_TOXICITY_SCREEN"
+evaluated.loc[diarylethene_idx & evaluated.joint_success,"final_status"]="PASS_DIARYLETHENE_AND_TOXICITY_SCREEN"
 evaluated["PSS_pred"]=np.nan;evaluated["quantum_yield_pred"]=np.nan;evaluated["deltaH_kJ_mol"]=np.nan;evaluated["stored_energy_MJ_kg"]=np.nan
 
-metric_flags=evaluated[["family","canonical_smiles","target_A_pass","target_B_pass","joint_success"]]
+metric_flags=evaluated[["family","canonical_smiles","target_A_pass","target_B_pass","joint_success",
+                        "photoswitch_space_pass","toxicity_space_pass","phototoxic_probability",
+                        "phototoxic_uncertainty","phototoxic_upper_confidence","toxicity_similarity",
+                        "toxicity_in_domain","known_phototoxic_match","toxicity_pass"]]
 audit=audit.drop(columns=["target_A_pass","target_B_pass","joint_success"],errors="ignore").merge(
     metric_flags,on=["family","canonical_smiles"],how="left")
 for column in ["target_A_pass","target_B_pass","joint_success"]:
     audit[column]=audit[column].fillna(False).astype(bool)
 audit.to_csv(OUT/"proposal_audit.csv",index=False)
 
-candidate_pool=evaluated[evaluated.passes_common_filter & ~evaluated.canonical_smiles.isin(training_smiles)].copy()
+candidate_pool=evaluated[evaluated.passes_common_filter & evaluated.toxicity_space_pass &
+                         ~evaluated.canonical_smiles.isin(training_smiles)].copy()
 candidate_pool=candidate_pool.sort_values(
     ["family","joint_success","selection_score","reward","canonical_smiles"],
     ascending=[True,False,False,False,True],kind="mergesort")
@@ -496,17 +617,26 @@ summary.to_csv(OUT/"summary.csv",index=False);display(summary);display(metrics)
 assert len(generated)==TOP_CANDIDATES
 assert generated.canonical_smiles.nunique()==TOP_CANDIDATES
 assert generated.groupby("family").size().eq(TOP_PER_FAMILY).all()
-for state_a_smiles, state_b_smiles in zip(generated.state_A_smiles, generated.state_B_smiles):
-    state_a, state_b = Chem.MolFromSmiles(state_a_smiles), Chem.MolFromSmiles(state_b_smiles)
+assert generated.toxicity_space_pass.all()
+for row in generated.itertuples():
+    state_a, state_b = Chem.MolFromSmiles(row.state_A_smiles), Chem.MolFromSmiles(row.state_B_smiles)
     assert state_a is not None and state_b is not None
     assert Chem.MolToSmiles(state_a, canonical=True, isomericSmiles=True) != Chem.MolToSmiles(state_b, canonical=True, isomericSmiles=True)
-    assert Chem.MolToSmiles(state_a, canonical=True, isomericSmiles=False) == Chem.MolToSmiles(state_b, canonical=True, isomericSmiles=False)
+    assert rdMolDescriptors.CalcMolFormula(state_a) == rdMolDescriptors.CalcMolFormula(state_b)
+    if row.family in {"azo","stilbene"}:
+        assert Chem.MolToSmiles(state_a, canonical=True, isomericSmiles=False) == Chem.MolToSmiles(state_b, canonical=True, isomericSmiles=False)
 manifest = {
-    "purpose": "one conditional SELFIES-GRU for azo and stilbene-like E/Z photoswitch candidates",
-    "generator": {"architecture": "ConditionalGRU", "single_checkpoint": str(MODEL_DIR/"unified_conditional_agent.pt"), "family_tokens": FAMILY_TOKENS},
-    "sources": {"M01": "The Photoswitch Dataset", "UVVisML": "pinned cached split files", "generator_training_structures": len(training_smiles)},
+    "purpose": "four-class photoswitch generation with an experimental phototoxicity screen",
+    "generator": {"architecture": "ConditionalGRU plus reaction-constrained state-pair templates", "single_checkpoint": str(MODEL_DIR/"unified_conditional_agent.pt"), "family_tokens": FAMILY_TOKENS},
+    "sources": {"M01": "The Photoswitch Dataset", "UVVisML": "pinned cached split files",
+                "QDB_2011TIV324": "53 structured OECD 432 / 3T3 NRU labels",
+                "PhotoChem_251": "heterogeneous external label agreement audit joined by CAS",
+                "generator_training_structures": len(training_smiles)},
     "families": summary.to_dict(orient="records"),
-    "selection": {"total": TOP_CANDIDATES, "per_family": TOP_PER_FAMILY, "primary": "joint_success", "secondary": "evaluator/proxy selection_score"},
+    "proposal_cap_per_family": 10000,
+    "selection": {"total": TOP_CANDIDATES, "per_family": TOP_PER_FAMILY, "primary": "photoswitch AND toxicity-space success", "secondary": "evaluator/proxy selection_score"},
+    "phototoxicity": {"training_rows": len(toxicity_data), "screening_threshold_upper_confidence": TOXICITY_SCREEN_THRESHOLD,
+                       "model_metrics": toxicity_cv, "applicability_is_reported_not_assumed": True},
     "metrics": {
         "path": str(OUT/"generation_metrics.csv"),
         "validity": "N_valid / N_generated",
@@ -514,10 +644,10 @@ manifest = {
         "novelty": "N_unique_valid_not_in_training / N_unique_valid",
         "joint_success_rate": "mean(target_A_pass AND target_B_pass) over N_generated",
         "diversity": "1 - mean pairwise Morgan(radius=2,2048-bit) Tanimoto over unique valid structures",
-        "target_A": "held-out evaluator UV lambda in [300, 400] nm",
-        "target_B": {"azo": "held-out evaluator half-life in [4,24] h AND M01 transition-proxy delta-lambda >= 20 nm", "stilbene": "valid structural E/Z pair"},
+        "target_A": "MOST/photoswitch space: valid paired states and UV proxy in [300,400] nm; azo additionally requires half-life [4,24] h and delta-lambda >=20 nm",
+        "target_B": "phototoxicity space: independent ExtraTrees ensemble upper-confidence probability < 0.70 and no exact known-positive match",
     },
-    "scope_warning": "stilbene-like has structural E/Z and UV proxy only; PSS, quantum yield, half-life and stored energy are unavailable",
+    "scope_warning": "toxicity_pass is an early in-silico screen, not proof of non-phototoxicity; the 53-compound model is often out-of-domain for new photoswitch classes",
     "missing_physical_endpoints": ["PSS", "quantum_yield", "deltaH_kJ_mol", "stored_energy_MJ_kg"],
 }
 (OUT/"run_manifest.json").write_text(json.dumps(manifest,indent=2),encoding="utf-8")
@@ -528,10 +658,12 @@ print(f"selected={len(generated):,}; pool={len(candidate_pool):,}; one checkpoin
         """
 ## Interpretation
 
-Оба класса созданы одной policy и различаются только control-token. `PASS_AZO_PROXY`
-имеет azo-specific half-life/Δλ labels. Для `PASS_STILBENE_STRUCTURAL_PROXY`
-подтверждены только diaryl-alkene E/Z pair и общий UV proxy: half-life, PSS,
-quantum yield и stored energy отсутствуют. Это намеренно отражено в CSV.
+Все четыре класса входят в одну conditional policy. Для spiropyran и
+diarylethene state pairs дополнительно ограничены реакционными шаблонами, потому
+что их нельзя корректно получить простой сменой E/Z stereo. `target_A_pass`
+описывает photoswitch/MOST-пространство, `target_B_pass` — экспериментально
+обученный phototoxicity screen. Последний является приоритизацией для дальнейшей
+OECD 432 проверки, а не утверждением о безопасности.
         """
     ),
 ]

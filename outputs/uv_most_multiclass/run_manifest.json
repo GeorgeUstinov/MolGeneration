@@ -1,49 +1,92 @@
 {
-  "purpose": "one conditional SELFIES-GRU for azo and stilbene-like E/Z photoswitch candidates",
+  "purpose": "four-class photoswitch generation with an experimental phototoxicity screen",
   "generator": {
-    "architecture": "ConditionalGRU",
+    "architecture": "ConditionalGRU plus reaction-constrained state-pair templates",
     "single_checkpoint": "/home/sigmatau17/TEST/outputs/uv_most_multiclass/models/unified_conditional_agent.pt",
     "family_tokens": {
       "azo": "<AZO>",
-      "stilbene": "<STILBENE>"
+      "stilbene": "<STILBENE>",
+      "spiropyran": "<SPIROPYRAN>",
+      "diarylethene": "<DIARYLETHENE>"
     }
   },
   "sources": {
     "M01": "The Photoswitch Dataset",
     "UVVisML": "pinned cached split files",
-    "generator_training_structures": 1153
+    "QDB_2011TIV324": "53 structured OECD 432 / 3T3 NRU labels",
+    "PhotoChem_251": "heterogeneous external label agreement audit joined by CAS",
+    "generator_training_structures": 1513
   },
   "families": [
     {
       "family": "azo",
-      "final_status": "FAIL_PROXY",
-      "rows": 4230,
+      "final_status": "FAIL_PHOTOSWITCH_OR_TOXICITY_SCREEN",
+      "rows": 4002,
       "selected_top_1000": 0
     },
     {
       "family": "azo",
-      "final_status": "PASS_AZO_PROXY",
-      "rows": 883,
-      "selected_top_1000": 500
+      "final_status": "PASS_AZO_AND_TOXICITY_SCREEN",
+      "rows": 2194,
+      "selected_top_1000": 250
+    },
+    {
+      "family": "diarylethene",
+      "final_status": "FAIL_PHOTOSWITCH_OR_TOXICITY_SCREEN",
+      "rows": 120,
+      "selected_top_1000": 6
+    },
+    {
+      "family": "diarylethene",
+      "final_status": "PASS_DIARYLETHENE_AND_TOXICITY_SCREEN",
+      "rows": 244,
+      "selected_top_1000": 244
+    },
+    {
+      "family": "spiropyran",
+      "final_status": "FAIL_PHOTOSWITCH_OR_TOXICITY_SCREEN",
+      "rows": 676,
+      "selected_top_1000": 63
+    },
+    {
+      "family": "spiropyran",
+      "final_status": "PASS_SPIROPYRAN_AND_TOXICITY_SCREEN",
+      "rows": 187,
+      "selected_top_1000": 187
     },
     {
       "family": "stilbene",
-      "final_status": "FAIL_PROXY",
-      "rows": 4911,
+      "final_status": "FAIL_PHOTOSWITCH_OR_TOXICITY_SCREEN",
+      "rows": 1058,
       "selected_top_1000": 0
     },
     {
       "family": "stilbene",
-      "final_status": "PASS_STILBENE_STRUCTURAL_PROXY",
-      "rows": 10456,
-      "selected_top_1000": 507
+      "final_status": "PASS_STILBENE_AND_TOXICITY_SCREEN",
+      "rows": 2726,
+      "selected_top_1000": 252
     }
   ],
+  "proposal_cap_per_family": 10000,
   "selection": {
     "total": 1000,
-    "per_family": 500,
-    "primary": "joint_success",
+    "per_family": 250,
+    "primary": "photoswitch AND toxicity-space success",
     "secondary": "evaluator/proxy selection_score"
+  },
+  "phototoxicity": {
+    "training_rows": 53,
+    "screening_threshold_upper_confidence": 0.7,
+    "model_metrics": {
+      "validation": "5-fold stratified out-of-fold",
+      "n_compounds": 53,
+      "n_phototoxic": 37,
+      "n_non_phototoxic": 16,
+      "roc_auc": 0.7804054054054055,
+      "balanced_accuracy_at_0_5": 0.6773648648648649,
+      "brier_score": 0.19197259231914104
+    },
+    "applicability_is_reported_not_assumed": true
   },
   "metrics": {
     "path": "/home/sigmatau17/TEST/outputs/uv_most_multiclass/generation_metrics.csv",
@@ -52,13 +95,10 @@
     "novelty": "N_unique_valid_not_in_training / N_unique_valid",
     "joint_success_rate": "mean(target_A_pass AND target_B_pass) over N_generated",
     "diversity": "1 - mean pairwise Morgan(radius=2,2048-bit) Tanimoto over unique valid structures",
-    "target_A": "held-out evaluator UV lambda in [300, 400] nm",
-    "target_B": {
-      "azo": "held-out evaluator half-life in [4,24] h AND M01 transition-proxy delta-lambda >= 20 nm",
-      "stilbene": "valid structural E/Z pair"
-    }
+    "target_A": "MOST/photoswitch space: valid paired states and UV proxy in [300,400] nm; azo additionally requires half-life [4,24] h and delta-lambda >=20 nm",
+    "target_B": "phototoxicity space: independent ExtraTrees ensemble upper-confidence probability < 0.70 and no exact known-positive match"
   },
-  "scope_warning": "stilbene-like has structural E/Z and UV proxy only; PSS, quantum yield, half-life and stored energy are unavailable",
+  "scope_warning": "toxicity_pass is an early in-silico screen, not proof of non-phototoxicity; the 53-compound model is often out-of-domain for new photoswitch classes",
   "missing_physical_endpoints": [
     "PSS",
     "quantum_yield",

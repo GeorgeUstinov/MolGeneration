@@ -1,0 +1,54 @@
+compound_id,name,cas,smiles,phototoxic,endpoint,photochem_label,photochem_evidence_count,photochem_agrees
+1,5-MOP,484-20-8,COc1c2ccoc2cc2oc(=O)ccc12,1,3T3 NRU phototoxicity,1.0,4,True
+2,8-MOP,298-81-7,COc1c2occc2cc2ccc(=O)oc12,1,3T3 NRU phototoxicity,1.0,5,True
+3,Angelicin,523-50-2,O=c1ccc2ccc3occc3c2o1,1,3T3 NRU phototoxicity,1.0,1,True
+4,Tiaprofenic Acid,33005-95-7,CC(C(=O)O)c1ccc(C(=O)c2ccccc2)s1,1,3T3 NRU phototoxicity,1.0,3,True
+5,Ketoprofen,22071-15-4,CC(C(=O)O)c1cccc(C(=O)c2ccccc2)c1,1,3T3 NRU phototoxicity,1.0,4,True
+6,Fenofibrate,49562-28-9,CC(C)OC(=O)C(C)(C)Oc1ccc(C(=O)c2ccc(Cl)cc2)cc1,1,3T3 NRU phototoxicity,1.0,3,True
+7,Amiodarone,1951-25-3,CCCCc1oc2ccccc2c1C(=O)c1cc(I)c(OCCN(CC)CC)c(I)c1,1,3T3 NRU phototoxicity,1.0,4,True
+8,Chlorpromazine,50-53-3,CN(C)CCCN1c2ccccc2Sc2ccc(Cl)cc21,1,3T3 NRU phototoxicity,1.0,4,True
+9,Promethazine,60-87-7,CC(CN1c2ccccc2Sc2ccccc21)N(C)C,1,3T3 NRU phototoxicity,1.0,4,True
+10,Neutral Red,553-24-2,Cc1cc2nc3ccc(N(C)C)cc3nc2cc1N,1,3T3 NRU phototoxicity,1.0,5,True
+11,Rose Bengal,11121-48-5,O=C(O)c1c(Cl)c(Cl)c(Cl)c(Cl)c1-c1c2cc(I)c(=O)c(I)c-2oc2c(I)c(O)c(I)cc12,1,3T3 NRU phototoxicity,1.0,4,True
+12,Demeclocycline,127-33-3,CN(C)[C@@H]1C(=O)/C(=C(\N)O)C(=O)[C@@]2(O)C(=O)C3=C(O)c4c(O)ccc(Cl)c4[C@@H](O)[C@H]3C[C@@H]12,1,3T3 NRU phototoxicity,1.0,3,True
+13,Musk ambrette,83-66-9,COc1c(C(C)(C)C)cc([N+](=O)[O-])c(C)c1[N+](=O)[O-],1,3T3 NRU phototoxicity,1.0,4,True
+14,Furosemide,54-31-9,NS(=O)(=O)c1cc(C(=O)O)c(NCc2ccco2)cc1Cl,1,3T3 NRU phototoxicity,1.0,3,True
+15,6-Methylcoumarin,92-48-8,Cc1ccc2oc(=O)ccc2c1,1,3T3 NRU phototoxicity,1.0,5,True
+16,Acridine,260-94-6,c1ccc2nc3ccccc3cc2c1,1,3T3 NRU phototoxicity,1.0,4,True
+17,Anthracene,120-12-7,c1ccc2cc3ccccc3cc2c1,1,3T3 NRU phototoxicity,1.0,5,True
+18,Nalidixic Acid,389-08-2,CCn1cc(C(=O)O)c(=O)c2ccc(C)nc21,1,3T3 NRU phototoxicity,1.0,4,True
+19,Norfloxacin,70458-96-7,CCn1cc(C(=O)O)c(=O)c2cc(F)c(N3CCNCC3)cc21,1,3T3 NRU phototoxicity,1.0,4,True
+20,Bithionol,97-18-7,Oc1c(Cl)cc(Cl)cc1Sc1cc(Cl)cc(Cl)c1O,1,3T3 NRU phototoxicity,1.0,5,True
+21,protoporphyrin IX,553-12-8,C=Cc1c(C)/c2[nH]/c1=C\C1=NC(=C(CCC(=O)O)C1C)/C=C1N=C(/C=C3N=C(\C=2)C(C=C)C\3C)C(C)=C\1CCC(=O)O,1,3T3 NRU phototoxicity,1.0,4,True
+22,Ofloxacin,82419-36-1,CC1COc2c(N3CCN(C)CC3)c(F)cc3c(=O)c(C(=O)O)cn1c23,1,3T3 NRU phototoxicity,1.0,4,True
+23,Penicillin G,61-33-6,CC1(C)S[C@@H]2[C@H](N=C(O)Cc3ccccc3)C(=O)N2[C@H]1C(=O)O,0,3T3 NRU phototoxicity,0.0,4,True
+24,p-Aminobenzoic acid,150-13-0,Nc1ccc(C(=O)O)cc1,0,3T3 NRU phototoxicity,0.0,4,True
+25,Chlorhexidine dihydrochloride,3697-42-5,N=C(NCCCCCCNC(=N)NC(=N)Nc1ccc(Cl)cc1)NC(=N)Nc1ccc(Cl)cc1,0,3T3 NRU phototoxicity,0.0,2,True
+26,Histidine,4998-57-6,NC(Cc1cnc[nH]1)C(=O)O,0,3T3 NRU phototoxicity,,0,
+27,Sodium Lauryl Sulfate,151-41-7,CCCCCCCCCCCCOS(=O)(=O)O,0,3T3 NRU phototoxicity,,0,
+28,Benzophenone-4,4065-45-6,COc1cc(O)c(C(=O)c2ccccc2)cc1S(=O)(=O)O,0,3T3 NRU phototoxicity,0.0,5,True
+29,Olaquindox,23696-28-8,Cc1c(C(O)=NCCO)[n+](=O)c2ccccc2n1[O-],1,3T3 NRU phototoxicity,,0,
+30,Sparfloxacin,110871-86-8,C[C@@H]1CN(c2c(F)c(N)c3c(=O)c(C(=O)O)cn(C4CC4)c3c2F)C[C@H](C)N1,1,3T3 NRU phototoxicity,,0,
+31,Moxifloxacin,151096-09-2,COc1c(N2C[C@@H]3CCCN[C@@H]3C2)c(F)cc2c(=O)c(C(=O)O)cn(C3CC3)c12,0,3T3 NRU phototoxicity,,0,
+32,Thiourea,62-56-6,N=C(N)S,0,3T3 NRU phototoxicity,0.0,2,True
+33,Piroxicam,36322-90-4,CN1/C(=C(/O)Nc2ccccn2)C(=O)c2ccccc2S1(=O)=O,0,3T3 NRU phototoxicity,1.0,4,False
+34,Cinnamaldehyde,104-55-2,O=C/C=C/c1ccccc1,0,3T3 NRU phototoxicity,0.0,4,True
+35,Doxycycline,564-25-0,C[C@H]1c2cccc(O)c2C(O)=C2C(=O)[C@]3(O)C(=O)/C(=C(/N)O)C(=O)[C@@H](N(C)C)[C@@H]3[C@@H](O)[C@@H]21,1,3T3 NRU phototoxicity,,0,
+36,Tetrachlorosalicylanilide,7426-07-5,OC(=Nc1ccccc1)c1c(O)c(Cl)c(Cl)c(Cl)c1Cl,1,3T3 NRU phototoxicity,,0,
+37,"3,3',4',5-Tetrachlorosalicylanilide",1154-59-2,OC(=Nc1ccc(Cl)c(Cl)c1)c1cc(Cl)cc(Cl)c1O,1,3T3 NRU phototoxicity,1.0,3,True
+38,Octyl salicylate,6969-49-9,CCCCCCCCOC(=O)c1ccccc1O,0,3T3 NRU phototoxicity,,0,
+39,Octyl methoxycinnamate,5466-77-3,CCCCC(CC)COC(=O)/C=C/c1ccc(OC)cc1,0,3T3 NRU phototoxicity,0.0,5,True
+40,"Bicyclo[2.2.1]​heptan-​2-​one, 1,​7,​7-​trimethyl-​3-​(phenylmethylene)​-​, (1R,​4S)​-",36065-09-5,CC1(C)[C@@H]2CC[C@@]1(C)C(=O)/C2=C\c1ccccc1,0,3T3 NRU phototoxicity,,0,
+41,Hexachlorophene,70-30-4,Oc1c(Cl)cc(Cl)c(Cl)c1Cc1c(O)c(Cl)cc(Cl)c1Cl,0,3T3 NRU phototoxicity,1.0,4,False
+42,R016-8554,,COC(=O)c1cc(-c2ccccc2)c(=O)n2ccccc12,1,3T3 NRU phototoxicity,,0,
+43,R017-3271,,COC(=O)c1cc(-c2ccccc2)c(=O)n2ccc3c4ccccc4[nH]c3c12,1,3T3 NRU phototoxicity,,0,
+44,R065-1254,,COCCN(CCOC)C(=O)c1cc(-c2ccc(OCc3ccccc3)cc2)c(=O)n2ccc3ccsc3c12,1,3T3 NRU phototoxicity,,0,
+45,R065-2822,,COCCN(CC1CC1)C(=O)c1cc(-c2ccc(OCc3ccccc3)cc2)c(=O)n2ccc3ccsc3c12,1,3T3 NRU phototoxicity,,0,
+46,R065-2996,,COCCN(C(=O)c1c(Cc2cccc(OC)c2)cc(=O)n2ccc3ccsc3c12)c1ccccc1,1,3T3 NRU phototoxicity,,0,
+47,R012-9786,,CCOC(=O)c1ccc2c3sccc3ccn2c1=O,1,3T3 NRU phototoxicity,,0,
+48,R019-5686,,COCC1CCCN1C(=O)c1cc(-c2ccccc2)c(=O)n2ccc3ccsc3c12,1,3T3 NRU phototoxicity,,0,
+49,R019-8022,,O=C(c1cc(-c2ccccc2)c(=O)n2ccc3ccc(Cl)cc3c12)N1CCCC1CO,1,3T3 NRU phototoxicity,,0,
+50,R065-8275,,COCCN(CC1CC1)C(=O)c1cc(-c2ccccc2OC)c(=O)n2ccc3ccsc3c12,1,3T3 NRU phototoxicity,,0,
+51,Bay-y3118,,O=C(O)c1cn(C2CC2)c2c(Cl)c(N3C[C@@H]4CCCN[C@@H]4C3)c(F)cc2c1=O,1,3T3 NRU phototoxicity,,0,
+52,Tetracycline,60-54-8,CN(C)[C@@H]1C(=O)C(C(=N)O)=C(O)[C@@]2(O)C(=O)C3=C(O)c4c(O)cccc4[C@@](C)(O)[C@H]3C[C@@H]12,0,3T3 NRU phototoxicity,1.0,5,False
+53,6a,,NCc1ccc(C2CCCCC2O)cc1C(F)(F)F,0,3T3 NRU phototoxicity,,0,

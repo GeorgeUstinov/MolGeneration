@@ -22,11 +22,13 @@ cells = [
 
 Notebook читает свежий balanced top-1000 из
 `generated_multiclass_photoswitch.csv`, полученный одним conditional
-SELFIES-GRU с family-токенами `<AZO>` и `<STILBENE>`.
+SELFIES-GRU с family-токенами `<AZO>`, `<STILBENE>`, `<SPIROPYRAN>` и
+`<DIARYLETHENE>`.
 
-Оба класса имеют явные E/Z-пары и общий UV proxy. Azo дополнительно имеет
-обучаемые half-life и E/Z spectral-separation proxies. Для stilbene-like
-half-life, PSS, quantum yield, ΔH и stored energy отсутствуют и не подменяются.
+В выборке четыре сбалансированных класса: azo, stilbene, spiropyran и
+diarylethene. Два последних имеют reaction-constrained open/closed pairs.
+Второе химическое пространство — экспериментально обученный phototoxicity
+screen; ADME-like величины используются только как признаки модели.
         """
     ),
     code(
@@ -44,12 +46,17 @@ RDLogger.DisableLog("rdApp.*")
 ROOT = Path.cwd().resolve()
 CSV_PATH = ROOT / "generated_multiclass_photoswitch.csv"
 METRICS_PATH = ROOT / "outputs" / "uv_most_multiclass" / "generation_metrics.csv"
+TOXICITY_METRICS_PATH = ROOT / "outputs" / "uv_most_multiclass" / "phototoxicity_model_metrics.csv"
+TOXICITY_TRAINING_PATH = ROOT / "outputs" / "uv_most_multiclass" / "phototoxicity_training.csv"
 df = pd.read_csv(CSV_PATH)
 required = {
     "selection_rank", "candidate_id", "rank_within_family", "family",
     "canonical_smiles", "state_A_smiles", "state_B_smiles",
     "pair_valid", "eval_uv_lambda_nm", "eval_uv_uncertainty_nm", "sa_score",
     "reward", "selection_score", "target_A_pass", "target_B_pass",
+    "photoswitch_space_pass", "toxicity_space_pass", "phototoxic_probability",
+    "phototoxic_uncertainty", "phototoxic_upper_confidence", "toxicity_similarity",
+    "toxicity_in_domain", "toxicity_pass",
     "joint_success", "PSS_pred", "quantum_yield_pred", "deltaH_kJ_mol",
     "stored_energy_MJ_kg", "final_status",
 }
@@ -76,16 +83,19 @@ summary = (
           median_uv_nm=("eval_uv_lambda_nm", "median"),
           median_uv_uncertainty_nm=("eval_uv_uncertainty_nm", "median"),
           median_sa=("sa_score", "median"),
+          median_phototoxic_probability=("phototoxic_probability", "median"),
+          toxicity_in_domain_rate=("toxicity_in_domain", "mean"),
           median_selection_score=("selection_score", "median"),
       )
 )
 display(summary)
 display(pd.crosstab(df["family"], df["final_status"]))
 
-colors = {"azo": "tab:orange", "stilbene": "tab:blue"}
+family_order = ["azo", "stilbene", "spiropyran", "diarylethene"]
+colors = {"azo":"tab:orange", "stilbene":"tab:blue", "spiropyran":"tab:green", "diarylethene":"tab:purple"}
 fig, axes = plt.subplots(1, 3, figsize=(16, 4.2))
-df["family"].value_counts().reindex(["azo", "stilbene"]).plot.bar(
-    ax=axes[0], color=[colors["azo"], colors["stilbene"]]
+df["family"].value_counts().reindex(family_order).plot.bar(
+    ax=axes[0], color=[colors[family] for family in family_order]
 )
 axes[0].set(title="Balanced shortlist", xlabel="family", ylabel="candidates")
 for family, part in df.groupby("family"):
@@ -147,7 +157,39 @@ plt.tight_layout()
 plt.show()
         """
     ),
-    md("## Лучшие E/Z-пары каждого класса"),
+    md("## Экспериментально обученный phototoxicity screen"),
+    code(
+        """
+fig, axes = plt.subplots(1, 3, figsize=(16, 4.2))
+df["toxicity_risk_band"] = pd.cut(
+    df["phototoxic_upper_confidence"], bins=[-np.inf,.35,.70,np.inf],
+    labels=["low_model_risk", "uncertain", "screened_out_high_risk"], right=False,
+)
+for family, part in df.groupby("family"):
+    axes[0].hist(part["phototoxic_probability"], bins=25, alpha=.5, color=colors[family], label=family)
+    axes[1].scatter(part["toxicity_similarity"], part["phototoxic_probability"], s=10, alpha=.3,
+                    color=colors[family], label=family)
+    axes[2].hist(part["phototoxic_upper_confidence"], bins=25, alpha=.5, color=colors[family], label=family)
+axes[0].set(title="Predicted phototoxicity", xlabel="probability", ylabel="count")
+axes[1].axvline(.15, color="black", ls="--", label="AD threshold")
+axes[1].set(title="Applicability domain", xlabel="max Tanimoto to U16", ylabel="probability")
+axes[2].axvline(.70, color="red", ls="--", label="screen threshold")
+axes[2].set(title="Upper-confidence screen", xlabel="p + 1.645·ensemble std", ylabel="count")
+for axis in axes:
+    axis.grid(alpha=.2); axis.legend(fontsize=8)
+plt.tight_layout(); plt.show()
+
+display(df.groupby("family").agg(
+    screen_pass_rate=("toxicity_pass","mean"),
+    in_domain_rate=("toxicity_in_domain","mean"),
+    median_probability=("phototoxic_probability","median"),
+    median_upper_confidence=("phototoxic_upper_confidence","median"),
+))
+display(pd.crosstab(df["family"], df["toxicity_risk_band"], dropna=False))
+print("Важно: screen_pass — критерий приоритизации, а не экспериментальное доказательство безопасности.")
+        """
+    ),
+    md("## Лучшие пары состояний каждого класса"),
     code(
         """
 def show_family_pairs(family, count=9):
@@ -173,23 +215,26 @@ def show_family_pairs(family, count=9):
 
 show_family_pairs("azo")
 show_family_pairs("stilbene")
+show_family_pairs("spiropyran")
+show_family_pairs("diarylethene")
         """
     ),
     md(
         """
 ### Научная граница результата
 
-Оба класса генерируются одним checkpoint. Для azo доступны M01-derived half-life
-и E/Z spectral proxies. Для stilbene-like подтверждены лишь diaryl/heteroaryl
-alkene E/Z pair и общий UVVisML proxy. PSS, quantum yield, ΔH и stored energy
-намеренно остаются пустыми для обоих классов до физической валидации.
+Все классы входят в общий conditional checkpoint, но connectivity-changing
+spiropyran и diarylethene pairs дополнительно ограничены реакционными шаблонами.
+Фототоксичность обучена на 53 структурах QDB и поэтому для новых scaffold часто
+находится вне applicability domain. PSS, quantum yield, ΔH и stored energy
+намеренно остаются пустыми до физической валидации.
         """
     ),
     md(
         """
 ## Метрики генерации
 
-Отдельный финальный вывод показывает метрики как для всех 36 000 proposals,
+Отдельный финальный вывод показывает метрики как для всех proposals,
 так и для отобранного top-1000. Единичные метрики top-1000 являются следствием
 целевого отбора; качество самого generator следует оценивать по scope
 `all_proposals`.
@@ -208,7 +253,7 @@ if missing_metrics:
     raise KeyError(f"generation_metrics.csv is missing: {sorted(missing_metrics)}")
 
 scope_order = ["all_proposals", "top_1000"]
-family_order = ["all", "azo", "stilbene"]
+family_order = ["all", "azo", "stilbene", "spiropyran", "diarylethene"]
 metrics["scope"] = pd.Categorical(metrics["scope"], scope_order, ordered=True)
 metrics["family"] = pd.Categorical(metrics["family"], family_order, ordered=True)
 metrics = metrics.sort_values(["scope", "family"]).reset_index(drop=True)
@@ -242,6 +287,19 @@ axes.legend(title="scope", loc="lower right")
 plt.xticks(rotation=0)
 plt.tight_layout()
 plt.show()
+
+toxicity_model_metrics = pd.read_csv(TOXICITY_METRICS_PATH)
+toxicity_training = pd.read_csv(TOXICITY_TRAINING_PATH)
+linked = toxicity_training.dropna(subset=["photochem_label"])
+toxicity_evidence = pd.DataFrame([{
+    "QDB_structured_training_rows": len(toxicity_training),
+    "QDB_phototoxic": int(toxicity_training["phototoxic"].sum()),
+    "QDB_non_phototoxic": int((toxicity_training["phototoxic"] == 0).sum()),
+    "PhotoChem_CAS_linked_rows": len(linked),
+    "PhotoChem_agreement": linked["photochem_agrees"].astype(str).str.lower().eq("true").mean(),
+}])
+display(toxicity_model_metrics.round(6))
+display(toxicity_evidence.round(6))
         """
     ),
 ]

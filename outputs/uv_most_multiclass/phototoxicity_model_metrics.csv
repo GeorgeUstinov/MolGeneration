@@ -1,0 +1,2 @@
+validation,n_compounds,n_phototoxic,n_non_phototoxic,roc_auc,balanced_accuracy_at_0_5,brier_score
+5-fold stratified out-of-fold,53,37,16,0.7804054054054055,0.6773648648648649,0.19197259231914104
